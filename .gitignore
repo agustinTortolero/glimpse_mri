@@ -1,61 +1,48 @@
-﻿# ---- Qt / qmake / Qt Creator ----
-*.user
-*.pro.user*
-*.qmake.stash
-Makefile*
-moc/
-*.moc
-ui_*.h
-qrc_*.cpp
-*.rcc
-*.qrc.dep
+﻿# Qt Creator / IDEs
+*.pro.user
+*.pro.user.*
+*.qbs.user*
+*.qmlproject.user*
+.vscode/
+.vs/
+.idea/
 
-# ---- Build artifacts (MSVC/MinGW) ----
-*.o
+# Qt build artifacts
+*.qmlc
+*.jsc
+moc/
+obj/
+rcc/
+ui/
+*.qrc.dep
+*.qmake.*
+
+# CMake / Ninja / Make
+build/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+out/
+_bin/
+
+# MSVC
 *.obj
-*.pch
 *.pdb
 *.idb
 *.ilk
-*.exp
-*.lib
-*.a
-*.dll
-*.exe
-*.manifest
-*.rsp
-*.tmp
+*.tlog
 *.log
 
-# ---- Build dirs ----
-build/
-build-*/
-debug/
-release/
-x64/
-bin/
-lib/
-
-# ---- IDEs ----
-.vs/
-.vscode/
-*.VC.db
-*.VC.opendb
-*.creator*
-*.files
-*.includes
-*.autosave
-
-# ---- Generated outputs (samples) ----
-# Remove these lines if you WANT to track example exports
-*.png
-*.dcm
-
-# ---- Datasets / raw files (keep repo small) ----
-*.h5
-*.hdf5
-*.mrd
-
-# ---- OS noise ----
-Thumbs.db
+# OS junk
 .DS_Store
+Thumbs.db
+
+# Generated images / scratch
+*.png
+*.bmp
+*.jpg
+*.jpeg
+*.tif
+*.tiff
+*.dcm
