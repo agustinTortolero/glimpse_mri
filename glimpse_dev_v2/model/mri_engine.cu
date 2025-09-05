@@ -1,234 +1,197 @@
-﻿// model/mri_engine.cu
+﻿// mri_engine.cu
 #include "mri_engine.hpp"
-#include "../src/common.hpp"
-
 #include <cuda_runtime.h>
-#include <device_launch_parameters.h>
 #include <cufft.h>
-
+#include <cstdio>
+#include <sstream>
 #include <algorithm>
-#include <cmath>
-#include <iostream>
-#include <vector>
 
-#ifndef CUDA_CHECK
-#define CUDA_CHECK(x) do { \
-cudaError_t err__ = (x); \
-    if (err__ != cudaSuccess) { \
-        std::cerr << "[ERR][CUDA] " #x " -> " << cudaGetErrorString(err__) << "\n"; \
-        return false; \
+namespace mri {
+
+// ---------- helpers ----------
+#define CUDA_CHECK(expr) do { \
+cudaError_t _e = (expr); \
+    if (_e != cudaSuccess) { \
+        fprintf(stderr, "[CUDA][ERR] %s:%d %s\n", __FILE__, __LINE__, cudaGetErrorString(_e)); \
+        goto fail; \
 } \
 } while(0)
-#endif
 
-    namespace mri {
-
-    // ---------------- kernels (top-level, no lambdas) ----------------
-
-    __device__ __forceinline__ size_t idx3(int c, int y, int x, int C, int H, int W) {
-        return (size_t)c * H * W + (size_t)y * W + (size_t)x;
+    static inline dim3 grid1D(int n, int tpb=256) {
+        return dim3((n + tpb - 1) / tpb);
     }
 
-    __global__ void k_ifftshift2d_off(const cufftComplex* __restrict__ in,
-                                      cufftComplex* __restrict__ out,
-                                      int C, int H, int W, int offY, int offX)
-    {
-        const int x = blockIdx.x * blockDim.x + threadIdx.x;
-        const int y = blockIdx.y * blockDim.y + threadIdx.y;
-        const int c = blockIdx.z;
-        if (x >= W || y >= H || c >= C) return;
-
-        const int sx = (x + offX) % W;
-        const int sy = (y + offY) % H;
-
-        out[idx3(c, y, x, C, H, W)] = in[idx3(c, sy, sx, C, H, W)];
+// scale complex array in-place: z *= s
+__global__ void k_scale_complex(float2* a, int N, float s) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < N) {
+        float2 v = a[i];
+        v.x *= s; v.y *= s;
+        a[i] = v;
     }
+}
 
-    __global__ void k_scale(cufftComplex* data, int n, float s)
-    {
-        const int i = blockIdx.x * blockDim.x + threadIdx.x;
-        if (i < n) {
-            data[i].x *= s;
-            data[i].y *= s;
-        }
-    }
-
-
-    __global__ void k_shift2d_float_off(const float* __restrict__ in,
-                                        float* __restrict__ out,
-                                        int H, int W, int offY, int offX)
-    {
-        const int x = blockIdx.x * blockDim.x + threadIdx.x;
-        const int y = blockIdx.y * blockDim.y + threadIdx.y;
-        if (x >= W || y >= H) return;
-
-        const int sx = (x + offX) % W;
-        const int sy = (y + offY) % H;
-        out[(size_t)y * W + x] = in[(size_t)sy * W + sx];
-    }
-
-
-    __global__ void k_rss(const cufftComplex* __restrict__ imgs,
-                          float* __restrict__ out,
-                          int C, int H, int W)
-    {
-        const int x = blockIdx.x * blockDim.x + threadIdx.x;
-        const int y = blockIdx.y * blockDim.y + threadIdx.y;
-        if (x >= W || y >= H) return;
-
+// RSS over coils: out[y,x] = sqrt( sum_c |img_c[y,x]|^2 )
+__global__ void k_rss(const float2* imgs, int C, int H, int W, float* out) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x; // linear over H*W
+    const int HW = H * W;
+    if (i < HW) {
         float acc = 0.f;
+        // imgs layout: [C][H][W] contiguous
         for (int c = 0; c < C; ++c) {
-            const size_t i = idx3(c, y, x, C, H, W);
-            const float re = imgs[i].x;
-            const float im = imgs[i].y;
-            acc += re * re + im * im;
+            const float2 z = imgs[c * HW + i];
+            acc += z.x * z.x + z.y * z.y;
         }
-        out[(size_t)y * W + x] = sqrtf(acc);
+        out[i] = sqrtf(acc);
+    }
+}
+
+// fftshift on magnitude (float) image
+__global__ void k_fftshift_f32(const float* in, int H, int W, float* out) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int HW = H * W;
+    if (idx < HW) {
+        int y = idx / W;
+        int x = idx - y * W;
+        int yy = (y + H/2) % H;
+        int xx = (x + W/2) % W;
+        out[y * W + x] = in[yy * W + xx];
+    }
+}
+
+// center crop square s×s from (H×W) into out (s×s)
+__global__ void k_crop_center_square(const float* in, int H, int W, float* out, int s) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int SS = s * s;
+    if (idx < SS) {
+        int y = idx / s;
+        int x = idx - y * s;
+        int offY = (H - s) / 2;
+        int offX = (W - s) / 2;
+        out[idx] = in[(y + offY) * W + (x + offX)];
+    }
+}
+
+bool ifft_rss_gpu(const mri::KSpace& ks,
+                  std::vector<float>& out,
+                  int& outH, int& outW,
+                  std::string* dbg)
+{
+    std::ostringstream os;
+    const int C  = ks.coils;
+    const int H  = ks.ny;
+    const int W  = ks.nx;
+    const int HW = H * W;
+    const size_t Ncx = static_cast<size_t>(C) * HW;
+
+    os << "[DBG][Recon] IFFT RSS GPU start (per-coil plan2d). C=" << C
+       << " H=" << H << " W=" << W << "\n";
+
+    if (C <= 0 || H <= 0 || W <= 0 || ks.host.size() != Ncx) {
+        os << "[ERR][Recon] invalid dims or buffer. host=" << ks.host.size()
+        << " expect=" << Ncx << "\n";
+        if (dbg) *dbg += os.str();
+        return false;
     }
 
-    // ---------------- helper ----------------
+    // --- device buffers ---
+    float2* d_k = nullptr;         // k-space / image buffer for all coils (in-place IFFT)
+    float*  d_mag = nullptr;       // magnitude H×W
+    float*  d_shift = nullptr;     // shifted H×W
+    float*  d_crop = nullptr;      // cropped s×s (if cropping)
+    CUDA_CHECK(cudaMalloc(&d_k,    Ncx * sizeof(float2)));
+    CUDA_CHECK(cudaMalloc(&d_mag,  HW  * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_shift,HW  * sizeof(float)));
 
-    static void centerCropSquareCPU(const std::vector<float>& in, int H, int W,
-                                    std::vector<float>& out, int& outH, int& outW)
-    {
-        const int S  = std::min(H, W);
-        const int y0 = (H - S) / 2;
-        const int x0 = (W - S) / 2;
+    // Copy host complex -> device float2
+    static_assert(sizeof(std::complex<float>) == sizeof(float2),
+                  "std::complex<float> must be layout-compatible with float2");
+    CUDA_CHECK(cudaMemcpy(d_k, ks.host.data(),
+                          Ncx * sizeof(float2), cudaMemcpyHostToDevice));
 
-        out.assign((size_t)S * S, 0.f);
-        for (int y = 0; y < S; ++y) {
-            const float* src = &in[(size_t)(y + y0) * W + x0];
-            float*       dst = &out[(size_t)y * S];
-            std::copy(src, src + S, dst);
-        }
-        outH = S; outW = S;
+    // --- cuFFT plan (2D, reused per coil) ---
+    cufftHandle plan = 0;
+    if (cufftPlan2d(&plan, H, W, CUFFT_C2C) != CUFFT_SUCCESS) {
+        os << "[ERR][Recon] cuFFT plan2d failed\n";
+        goto fail;
     }
+    os << "[DBG][Recon] cuFFT plan2d created for (" << H << "," << W << ")\n";
 
-    // ---------------- recon ----------------
+    // --- IFFT per coil (in-place) ---
+    for (int c = 0; c < C; ++c) {
+        float2* plane = d_k + static_cast<size_t>(c) * HW;
+        if (cufftExecC2C(plan, reinterpret_cast<cufftComplex*>(plane),
+                         reinterpret_cast<cufftComplex*>(plane),
+                         CUFFT_INVERSE) != CUFFT_SUCCESS) {
+            os << "[ERR][Recon] cufftExecC2C failed at coil " << c << "\n";
+            goto fail;
+        }
+    }
+    os << "[DBG][Recon] All coils IFFT done.\n";
 
-    // inside namespace mri (or drop the namespace wrapper if your file already has it)
-    // inside namespace mri
-    // inside namespace mri (or at file scope if you don't use a namespace)
-    bool ifft_rss_gpu(const KSpace& ks, std::vector<float>& out, std::string* dbg)
+    // --- scale (cuFFT doesn't scale inverse) ---
     {
-        const int C = ks.coils;
-        const int H = ks.ny;   // rows (ky)
-        const int W = ks.nx;   // cols (kx)
-        const size_t HW = (size_t)H * W;
-        const size_t N  = (size_t)C * HW;
-
-        std::cerr << "[DBG][Recon] IFFT RSS GPU start (per-coil plan2d). C=" << C
-                  << " H=" << H << " W=" << W << "\n";
-
-        // ---- pack host k-space to cufftComplex (coil-major, each coil plane contiguous) ----
-        // If your loader already stores coil-major [C,H,W], this is a direct copy.
-        std::vector<cufftComplex> h_k(N);
-        for (size_t i = 0; i < N; ++i) {
-            h_k[i].x = ks.host[i].real();
-            h_k[i].y = ks.host[i].imag();
-        }
-
-        // ---- device buffers ----
-        cufftComplex* d_img = nullptr;  // will hold coil-domain complex image after IFFT
-        float* d_mag        = nullptr;  // RSS magnitude
-        float* d_mag_center = nullptr;  // fftshifted magnitude for display/cropping
-
-        CUDA_CHECK(cudaMalloc(&d_img, N * sizeof(cufftComplex)));
-        CUDA_CHECK(cudaMalloc(&d_mag, HW * sizeof(float)));
-        CUDA_CHECK(cudaMalloc(&d_mag_center, HW * sizeof(float)));
-        CUDA_CHECK(cudaMemcpy(d_img, h_k.data(), N * sizeof(cufftComplex), cudaMemcpyHostToDevice));
-
-        // ---- IFFT per coil with a simple 2D plan (clarity > perf) ----
-        cufftHandle plan2d = 0;
-        if (cufftPlan2d(&plan2d, H, W, CUFFT_C2C) != CUFFT_SUCCESS) {
-            std::cerr << "[ERR][Recon] cufftPlan2d failed for (" << H << "," << W << ")\n";
-            cudaFree(d_img); cudaFree(d_mag); cudaFree(d_mag_center);
-            return false;
-        }
-        std::cerr << "[DBG][Recon] cuFFT plan2d created for (" << H << "," << W << ")\n";
-
-        for (int c = 0; c < C; ++c) {
-            cufftComplex* ptr = d_img + (size_t)c * HW;
-            if (cufftExecC2C(plan2d, ptr, ptr, CUFFT_INVERSE) != CUFFT_SUCCESS) {
-                std::cerr << "[ERR][Recon] cufftExecC2C inverse failed at coil " << c << "\n";
-                cufftDestroy(plan2d);
-                cudaFree(d_img); cudaFree(d_mag); cudaFree(d_mag_center);
-                return false;
-            }
-        }
+        const float s = 1.0f / static_cast<float>(HW);
+        k_scale_complex<<<grid1D(Ncx), 256>>>(d_k, static_cast<int>(Ncx), s);
+        CUDA_CHECK(cudaGetLastError());
         CUDA_CHECK(cudaDeviceSynchronize());
-        std::cerr << "[DBG][Recon] All coils IFFT done.\n";
-
-        // ---- scale (cuFFT backward is unnormalized) ----
-        {
-            const float scale = 1.0f / float(H * W);
-            const int threads = 256;
-            const int blocks  = int((N + threads - 1) / threads);
-            k_scale<<<blocks, threads>>>(d_img, (int)N, scale);
-            CUDA_CHECK(cudaPeekAtLastError());
-            CUDA_CHECK(cudaDeviceSynchronize());
-            std::cerr << "[DBG][Recon] Scale 1/(" << H << "*" << W << ") applied.\n";
-        }
-
-        // ---- RSS across coils ----
-        {
-            dim3 blk(16,16,1);
-            dim3 grd((W + blk.x - 1) / blk.x, (H + blk.y - 1) / blk.y, 1);
-            k_rss<<<grd, blk>>>(d_img, d_mag, C, H, W);
-            CUDA_CHECK(cudaPeekAtLastError());
-            CUDA_CHECK(cudaDeviceSynchronize());
-            std::cerr << "[DBG][Recon] RSS computed.\n";
-        }
-
-        // ---- fftshift in IMAGE domain to center DC before cropping ----
-        {
-            const int offY = H / 2, offX = W / 2;
-            dim3 blk(16,16,1);
-            dim3 grd((W + blk.x - 1) / blk.x, (H + blk.y - 1) / blk.y, 1);
-            k_shift2d_float_off<<<grd, blk>>>(d_mag, d_mag_center, H, W, offY, offX);
-            CUDA_CHECK(cudaPeekAtLastError());
-            CUDA_CHECK(cudaDeviceSynchronize());
-            std::cerr << "[DBG][Recon] img fftshift applied: offY=" << offY
-                      << " offX=" << offX << "\n";
-        }
-
-        // ---- copy back & center-crop to square ----
-        std::vector<float> h_mag(HW);
-        CUDA_CHECK(cudaMemcpy(h_mag.data(), d_mag_center, HW * sizeof(float), cudaMemcpyDeviceToHost));
-
-        auto centerCropSquareCPU = [](const std::vector<float>& in, int H, int W,
-                                      std::vector<float>& out, int& outH, int& outW)
-        {
-            const int S  = std::min(H, W);
-            const int y0 = (H - S) / 2;
-            const int x0 = (W - S) / 2;
-            out.assign((size_t)S * S, 0.f);
-            for (int y = 0; y < S; ++y) {
-                const float* src = &in[(size_t)(y + y0) * W + x0];
-                float*       dst = &out[(size_t)y * S];
-                std::copy(src, src + S, dst);
-            }
-            outH = S; outW = S;
-        };
-
-        int outH = 0, outW = 0;
-        centerCropSquareCPU(h_mag, H, W, out, outH, outW);
-
-        if (dbg) {
-            *dbg += "[DBG][Recon] Done (plan2d/coil-loop). -> center-crop "
-                    + std::to_string(outH) + "x" + std::to_string(outW) + "\n";
-        }
-
-        // ---- cleanup ----
-        cufftDestroy(plan2d);
-        cudaFree(d_img);
-        cudaFree(d_mag);
-        cudaFree(d_mag_center);
-
-        std::cerr << "[DBG][Recon] IFFT RSS GPU done.\n";
-        return true;
+        os << "[DBG][Recon] Scale 1/(" << H << "*" << W << ") applied.\n";
     }
 
+    // --- RSS to magnitude (H×W floats) ---
+    {
+        k_rss<<<grid1D(HW), 256>>>(d_k, C, H, W, d_mag);
+        CUDA_CHECK(cudaGetLastError());
+        CUDA_CHECK(cudaDeviceSynchronize());
+        os << "[DBG][Recon] RSS computed.\n";
+    }
 
-    } // namespace mri
+    // --- fftshift on magnitude ---
+    {
+        k_fftshift_f32<<<grid1D(HW), 256>>>(d_mag, H, W, d_shift);
+        CUDA_CHECK(cudaGetLastError());
+        CUDA_CHECK(cudaDeviceSynchronize());
+        os << "[DBG][Recon] img fftshift applied: offY=" << (H/2) << " offX=" << (W/2) << "\n";
+    }
 
+    // --- center-crop to square (min(H,W)×min(H,W)) ---
+    {
+        const int s = std::min(H, W);
+        if (s > 0 && (H != s || W != s)) {
+            CUDA_CHECK(cudaMalloc(&d_crop, s * s * sizeof(float)));
+            k_crop_center_square<<<grid1D(s*s), 256>>>(d_shift, H, W, d_crop, s);
+            CUDA_CHECK(cudaGetLastError());
+            CUDA_CHECK(cudaDeviceSynchronize());
+            outH = s; outW = s;
+            out.resize(static_cast<size_t>(s) * s);
+            CUDA_CHECK(cudaMemcpy(out.data(), d_crop, out.size()*sizeof(float), cudaMemcpyDeviceToHost));
+            os << "[DBG][Recon] IFFT RSS GPU done.\n";
+            os << "[DBG][Recon] Done (plan2d/coil-loop). -> center-crop " << s << "x" << s << "\n";
+        } else {
+            outH = H; outW = W;
+            out.resize(static_cast<size_t>(HW));
+            CUDA_CHECK(cudaMemcpy(out.data(), d_shift, out.size()*sizeof(float), cudaMemcpyDeviceToHost));
+            os << "[DBG][Recon] IFFT RSS GPU done (full size " << H << "x" << W << ").\n";
+        }
+    }
+
+    // cleanup
+    cufftDestroy(plan);
+    cudaFree(d_k); cudaFree(d_mag); cudaFree(d_shift);
+    if (d_crop) cudaFree(d_crop);
+    if (dbg) *dbg += os.str();
+    return true;
+
+fail:
+    if (plan) cufftDestroy(plan);
+    if (d_k) cudaFree(d_k);
+    if (d_mag) cudaFree(d_mag);
+    if (d_shift) cudaFree(d_shift);
+    if (d_crop) cudaFree(d_crop);
+    out.clear(); outH = outW = 0;
+    os << "[Recon][ERR] ifft_rss_gpu failed\n";
+    if (dbg) *dbg += os.str();
+    return false;
+}
+
+} // namespace mri

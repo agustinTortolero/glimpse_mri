@@ -14,14 +14,19 @@ class MainWindow : public QMainWindow {
 public:
     explicit MainWindow(QWidget* parent=nullptr);
 
-    // Image display
+    // existing API
     void setImage(const cv::Mat& img8);
+    void setMetadata(const QStringList& lines);
+    void appendMetadataLine(const QString& line);
+    void beginNewImageCycle();
 
-    // --- Metadata panel API ---
-    void setMetadata(const QStringList& lines); // replace all metadata
-    void setMetadataText(const QString& txt);   // replace with raw text
-    void appendMetadataLine(const QString& line); // append one line
-    void toggleMetadataPanel();                 // show/hide the dock
+    // NEW: busy status API
+    void beginBusy(const QString& message);
+    void endBusy();
+
+signals:
+    void requestSavePNG(const QString& path);
+    void requestSaveDICOM(const QString& path);
 
 protected:
     void contextMenuEvent(QContextMenuEvent* ev) override;
@@ -34,12 +39,13 @@ private slots:
 private:
     void refreshPixmap();
 
-    // Image state
     QLabel* m_label = nullptr;
-    cv::Mat m_img8;     // grayscale 8-bit
-    cv::Mat lastImg8u_; // unchanged, kept for your flow
+    cv::Mat m_img8;
+    bool    m_hasImage = false;
 
-    // --- Metadata dock state ---
     QDockWidget*    m_metaDock = nullptr;
     QPlainTextEdit* m_metaText = nullptr;
+
+    // NEW: track nested busy scopes (safe in reentrant paths)
+    int m_busyNesting = 0;
 };

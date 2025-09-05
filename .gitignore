@@ -1,48 +1,33 @@
-﻿# Qt Creator / IDEs
-*.pro.user
-*.pro.user.*
-*.qbs.user*
-*.qmlproject.user*
-.vscode/
-.vs/
-.idea/
+﻿# --- General build ---
+build/
+build-*/
+Debug/
+Release/
+x64/
+x86/
+*.o
+*.obj
+*.pdb
+*.exe
+*.dll
+*.log
 
-# Qt build artifacts
-*.qmlc
-*.jsc
+# --- Qt ---
+*.pro.user
+*.qmake.stash
 moc/
-obj/
 rcc/
 ui/
-*.qrc.dep
-*.qmake.*
+*.qrc.depends
 
-# CMake / Ninja / Make
-build/
+# --- CMake ---
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
 Makefile
-out/
-_bin/
 
-# MSVC
-*.obj
-*.pdb
-*.idb
-*.ilk
-*.tlog
-*.log
-
-# OS junk
-.DS_Store
-Thumbs.db
-
-# Generated images / scratch
-*.png
-*.bmp
-*.jpg
-*.jpeg
-*.tif
-*.tiff
-*.dcm
+# --- Visual Studio/QtCreator ---
+.vs/
+*.vcxproj.user
+*.sln
+*.user

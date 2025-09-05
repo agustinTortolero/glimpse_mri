@@ -1,321 +1,439 @@
 ﻿#include "app_controller.hpp"
-#include "../model/io_fastmri.hpp"
 #include "../view/mainwindow.hpp"
-#include "../src/image_utils.hpp"
-#include "../model/io_ismrmrd.hpp"
-
+#include "../src/image_utils.hpp"   // if you log/stretch elsewhere
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
+
 #include <iostream>
 #include <sstream>
+#include <omp.h>
+#include <QElapsedTimer>
+#include <QMetaObject>
 
-#include <QStringList>
-#include<QDateTime>
-// HDF5 (for the file probe)
-#include <H5Cpp.h>
-#include <H5Epublic.h>
+#include <QDateTime>
+#include <QTimer>
+#include <QFileInfo>
+
+#include <chrono>
 
 
-#include <dcmtk/dcmimgle/dcmimage.h>      // DicomImage
-#include <cstring>                         // std::memcpy
-
-
-// ---------------- probe helpers (file-local) ----------------
-namespace {
-
-enum class DataFlavor {
-    FastMRI,
-    ISMRMRD_Cartesian,
-    ISMRMRD_NonCartesian,
-    ISMRMRD_Unknown,
-    HDF5_Unknown,
-    NotHDF5
-};
-
-static const char* flavor_str(DataFlavor f) {
-    switch (f) {
-    case DataFlavor::FastMRI:            return "FastMRI";
-    case DataFlavor::ISMRMRD_Cartesian:  return "ISMRMRD_Cartesian";
-    case DataFlavor::ISMRMRD_NonCartesian:return "ISMRMRD_NonCartesian";
-    case DataFlavor::ISMRMRD_Unknown:    return "ISMRMRD_Unknown";
-    case DataFlavor::HDF5_Unknown:       return "HDF5_Unknown";
-    default:                              return "NotHDF5";
-    }
-}
-
-struct ProbeResult {
-    DataFlavor flavor = DataFlavor::HDF5_Unknown;
-    std::string trajectory;        // "cartesian", "radial", ...
-    bool has_xml = false;
-    bool has_acq = false;
-    bool has_kspace = false;
-    bool has_embedded_img = false;
-    std::string reason;
-};
-
-static void h5_silence_once() {
-    static bool done=false; if (done) return; done=true;
-    H5::Exception::dontPrint();
-    H5Eset_auto(H5E_DEFAULT, nullptr, nullptr);
-}
-
-static std::string find_between(const std::string& s, const std::string& a, const std::string& b) {
-    size_t i = s.find(a); if (i == std::string::npos) return "";
-    i += a.size();
-    size_t j = s.find(b, i); if (j == std::string::npos) return "";
-    return s.substr(i, j - i);
-}
-
-static std::string read_xml_text_quick(H5::H5File& f) {
-    try {
-        if (!f.nameExists("/dataset/xml")) return {};
-        H5::DataSet ds = f.openDataSet("/dataset/xml");
-        H5::StrType mem(H5::PredType::C_S1, H5T_VARIABLE);
-        char* cxml = nullptr; ds.read(&cxml, mem);
-        std::string xml = cxml ? std::string(cxml) : std::string();
-        if (cxml) free(cxml);
-        return xml;
-    } catch (...) { return {}; }
-}
-
-static ProbeResult probe_hdf5_flavor(const std::string& path) {
-    ProbeResult pr;
-    try {
-        H5::H5File f(path, H5F_ACC_RDONLY);
-
-        pr.has_xml = f.nameExists("/dataset/xml");
-        pr.has_acq = f.nameExists("/dataset/acquisitions");
-        pr.has_kspace = f.nameExists("kspace") || f.nameExists("/dataset/kspace");
-        pr.has_embedded_img =
-            f.nameExists("/dataset/reconstruction_rss") ||
-            f.nameExists("/dataset/image") ||
-            f.nameExists("/dataset/images") ||
-            f.nameExists("/dataset/image_0") ||
-            f.nameExists("/dataset/images_0");
-
-        // Prefer ISMRMRD detection if xml/acq are present
-        if (pr.has_xml || pr.has_acq) {
-            const std::string xml = read_xml_text_quick(f);
-            if (!xml.empty()) {
-                std::string enc = find_between(xml, "<encoding>", "</encoding>");
-                std::string tr  = find_between(enc, "<trajectory>", "</trajectory>");
-                if (!tr.empty()) pr.trajectory = tr;
-            }
-            if (pr.trajectory == "cartesian") {
-                pr.flavor = DataFlavor::ISMRMRD_Cartesian;
-                pr.reason = "ISMRMRD xml/acquisitions present; trajectory=cartesian";
-            } else if (!pr.trajectory.empty()) {
-                pr.flavor = DataFlavor::ISMRMRD_NonCartesian;
-                pr.reason = "ISMRMRD xml/acquisitions present; trajectory=" + pr.trajectory;
-            } else {
-                pr.flavor = DataFlavor::ISMRMRD_Unknown;
-                pr.reason = "ISMRMRD bits present; trajectory unknown";
-            }
-            return pr;
-        }
-
-        // Otherwise, looks like fastMRI if kspace at top or /dataset/kspace
-        if (pr.has_kspace) {
-            pr.flavor = DataFlavor::FastMRI;
-            pr.reason = "Top-level or /dataset/kspace dataset present";
-            return pr;
-        }
-
-        pr.flavor = DataFlavor::HDF5_Unknown;
-        pr.reason = "HDF5 readable but no known markers";
-        return pr;
-
-    } catch (const H5::Exception&) {
-        pr.flavor = DataFlavor::NotHDF5;
-        pr.reason = "Not an HDF5 or unreadable";
-        return pr;
-    }
-}
-
-// Simple DICOM → cv::Mat (8-bit MONO) using DCMTK's DicomImage
-static bool read_dicom_gray8(const std::string& path, cv::Mat& out8, std::string* why_fail = nullptr)
+// --------------------------------------------------------
+// ctor: keep your existing signal wiring
+// --------------------------------------------------------
+AppController::AppController(MainWindow* view) : m_view(view)
 {
-    std::cerr << "[DBG][DICOM] Opening: " << path << "\n";
-    DicomImage di(path.c_str());
-    if (di.getStatus() != EIS_Normal) {
-        if (why_fail) *why_fail = "DicomImage status not normal";
-        std::cerr << "[ERR][DICOM] DicomImage status=" << (int)di.getStatus() << "\n";
+#ifdef _OPENMP
+    std::cerr << "[DBG] OpenMP ON _OPENMP=" << _OPENMP << "\n";
+    std::cerr << "[DBG] OMP nthreads: " << omp_get_max_threads() << "\n";
+#else
+    std::cerr << "[DBG] OpenMP OFF\n";
+#endif
+
+    QObject::connect(m_view, &MainWindow::requestSavePNG,  m_view,
+                     [this](const QString& p){
+                         std::cerr << "[DBG][Controller] requestSavePNG received\n";
+                         this->savePNG(p);
+                     });
+
+    QObject::connect(m_view, &MainWindow::requestSaveDICOM, m_view,
+                     [this](const QString& p){
+                         std::cerr << "[DBG][Controller] requestSaveDICOM received\n";
+                         this->saveDICOM(p);
+                     });
+}
+
+// ===============================
+// Small helpers (clarity > perf)
+// ===============================
+cv::Mat AppController::to_u8(const cv::Mat& f32)
+{
+    std::cerr << "[DBG][Helper][to_u8] begin\n";
+    if (f32.empty() || f32.type() != CV_32F) {
+        std::cerr << "[ERR][Helper][to_u8] input empty or not CV_32F\n";
+        return {};
+    }
+    double mn = 0.0, mx = 0.0;
+    cv::minMaxLoc(f32, &mn, &mx);
+    if (mx - mn < 1e-12) {
+        std::cerr << "[DBG][Helper][to_u8] flat image; expanding range minimally\n";
+        mx = mn + 1.0;
+    }
+    cv::Mat norm32, u8;
+    f32.convertTo(norm32, CV_32F, 1.0 / (mx - mn), -mn / (mx - mn));
+    norm32.convertTo(u8, CV_8U, 255.0);
+    std::cerr << "[DBG][Helper][to_u8] end\n";
+    return u8;
+}
+
+cv::Mat AppController::vecf32_to_u8(const std::vector<float>& v, int H, int W)
+{
+    std::cerr << "[DBG][Helper][vecf32_to_u8] H=" << H << " W=" << W
+              << " v.size=" << v.size() << "\n";
+    if (H <= 0 || W <= 0 || (int)v.size() != H * W) {
+        std::cerr << "[ERR][Helper][vecf32_to_u8] size mismatch or bad dims\n";
+        return {};
+    }
+    cv::Mat f32(H, W, CV_32F, const_cast<float*>(v.data())); // view
+    cv::Mat u8 = to_u8(f32);
+    return u8.clone(); // own memory
+}
+
+cv::Mat AppController::make_gradient(int H, int W)
+{
+    std::cerr << "[DBG][Helper][make_gradient] H=" << H << " W=" << W << "\n";
+    cv::Mat g(H, W, CV_8UC1);
+    for (int y = 0; y < H; ++y) {
+        uint8_t* row = g.ptr<uint8_t>(y);
+        for (int x = 0; x < W; ++x) row[x] = static_cast<uint8_t>((x + y) & 255);
+    }
+    return g;
+}
+
+// ===============================
+// Load pipeline
+// ===============================
+void AppController::clearLoadState()
+{
+    std::cerr << "[DBG][Load] clearLoadState()\n";
+    m_meta.clear();
+    m_probe = io::ProbeResult{};
+    m_ks = mri::KSpace{};
+    m_pre.clear(); m_preH = m_preW = 0;
+    m_display8.release();
+}
+
+void AppController::load(const QString& pathQ)
+{
+    m_sourcePathQ = pathQ;
+    const std::string path = pathQ.toStdString();
+    std::cerr << "[DBG][Load] load() path=" << path << "\n";
+
+    // Tell the view a new image is coming (clears old state)
+    if (m_view) {
+        std::cerr << "[DBG][Controller] Notifying view: beginNewImageCycle()\n";
+        m_view->beginNewImageCycle();
+    }
+
+    // Show busy cursor/status until we return from this function
+    BusyScope busy(m_view, QString("Loading %1").arg(pathQ));
+
+
+    QElapsedTimer tAll; tAll.start();
+    qint64 msProbe = 0, msDicom = 0, msH5 = 0, msRecon = 0, msEmbed = 0;
+
+    clearLoadState();
+    m_meta << ("Source: " + pathQ);
+    m_meta << ("When: " + QDateTime::currentDateTime().toString(Qt::ISODate));
+
+    // 1) Probe
+    {
+        QElapsedTimer t; t.start();
+        load_probe(path);
+        msProbe = t.elapsed();
+        std::cerr << "[DBG][Load][T] probe=" << msProbe << " ms\n";
+    }
+
+    // 2) Branch by flavor
+    const auto f = m_probe.flavor;
+    if (f == io::Flavor::DICOM || f == io::Flavor::NotHDF5) {
+        QElapsedTimer t; t.start();
+        if (!load_dicom(path)) {
+            std::cerr << "[ERR][Load] DICOM load failed; preparing fallback\n";
+            prepare_fallback();
+        }
+        msDicom = t.elapsed();
+        m_meta << QString("Timing(ms): probe=%1 dicom=%2 total=%3")
+                      .arg(msProbe).arg(msDicom).arg(tAll.elapsed());
+        return;
+    }
+
+    // 3) HDF5 path
+    {
+        QElapsedTimer t; t.start();
+        if (!load_hdf5(path)) {
+            std::cerr << "[ERR][Load] HDF5 load failed; preparing fallback\n";
+            prepare_fallback();
+            m_meta << QString("Timing(ms): probe=%1 hdf5=%2 total=%3")
+                          .arg(msProbe).arg(t.elapsed()).arg(tAll.elapsed());
+            return;
+        }
+        msH5 = t.elapsed();
+        std::cerr << "[DBG][Load][T] hdf5=" << msH5 << " ms\n";
+    }
+
+    // 4) Prefer GPU recon; fallbacks cascade
+    {
+        QElapsedTimer t; t.start();
+        if (try_gpu_recon()) {
+            msRecon = t.elapsed();
+            std::cerr << "[DBG][Load][T] recon=" << msRecon << " ms\n";
+            m_meta << QString("Timing(ms): probe=%1 hdf5=%2 recon=%3 total=%4")
+                          .arg(msProbe).arg(msH5).arg(msRecon).arg(tAll.elapsed());
+            return;
+        }
+    }
+    {
+        QElapsedTimer t; t.start();
+        if (use_embedded_preview()) {
+            msEmbed = t.elapsed();
+            std::cerr << "[DBG][Load][T] embed=" << msEmbed << " ms\n";
+            m_meta << QString("Timing(ms): probe=%1 hdf5=%2 embed=%3 total=%4")
+                          .arg(msProbe).arg(msH5).arg(msEmbed).arg(tAll.elapsed());
+            return;
+        }
+    }
+
+    std::cerr << "[WRN][Load] No displayable image after HDF5; using gradient fallback\n";
+    prepare_fallback();
+    m_meta << QString("Timing(ms): probe=%1 hdf5=%2 total=%3")
+                  .arg(msProbe).arg(msH5).arg(tAll.elapsed());
+}
+
+
+void AppController::load_probe(const std::string& path)
+{
+    std::cerr << "[DBG][Load][Probe] start\n";
+    std::string dbg;
+    m_probe = io::probe(path, &dbg);
+    std::cerr << dbg; // already verbose
+
+    auto flavorStr = [&]() {
+        using F = io::Flavor;
+        switch (m_probe.flavor) {
+        case F::FastMRI:              return "FastMRI";
+        case F::ISMRMRD_Cartesian:    return "ISMRMRD_Cartesian";
+        case F::ISMRMRD_NonCartesian: return "ISMRMRD_NonCartesian";
+        case F::ISMRMRD_Unknown:      return "ISMRMRD_Unknown";
+        case F::HDF5_Unknown:         return "HDF5_Unknown";
+        case F::DICOM:                return "DICOM";
+        default:                      return "NotHDF5";
+        }
+    }();
+
+    m_meta << QString("Probe: %1  traj='%2'")
+                  .arg(flavorStr)
+                  .arg(QString::fromStdString(m_probe.trajectory));
+    std::cerr << "[DBG][Load][Probe] flavor=" << flavorStr
+              << " traj='" << m_probe.trajectory << "'\n";
+    if (m_view) {
+        const QString file = QFileInfo(QString::fromStdString(path)).fileName();
+        const QString title = QString("Glimpse MRI — %1 (%2)")
+                                  .arg(file)
+                                  .arg(flavorStr);
+        m_view->setWindowTitle(title);
+        std::cerr << "[DBG][Show] Title set: " << title.toStdString() << "\n";
+    }
+
+
+}
+
+bool AppController::load_dicom(const std::string& path)
+{
+    std::cerr << "[DBG][Load][DICOM] Trying read_dicom_gray8...\n";
+    cv::Mat dicom8; std::string why;
+    if (!io::read_dicom_gray8(path, dicom8, &why)) {
+        std::cerr << "[ERR][Load][DICOM] read failed: " << why << "\n";
+        m_meta << QString("DICOM read failed: %1").arg(QString::fromStdString(why));
         return false;
     }
-
-    // Pick a reasonable window for display (min–max)
-    if (di.isMonochrome()) {
-        di.setMinMaxWindow();
-    }
-
-    const int w = static_cast<int>(di.getWidth());
-    const int h = static_cast<int>(di.getHeight());
-    std::cerr << "[DBG][DICOM] dims=" << w << "x" << h << " frames=" << di.getFrameCount() << "\n";
-
-    // Get 8-bit output for frame #0
-    const int frame = 0;
-    const void* pix = di.getOutputData(8 /*bits*/, frame);
-    if (!pix) {
-        if (why_fail) *why_fail = "getOutputData(8) returned null";
-        std::cerr << "[ERR][DICOM] getOutputData(8) returned null\n";
-        return false;
-    }
-
-    out8 = cv::Mat(h, w, CV_8UC1);
-    std::memcpy(out8.data, pix, static_cast<size_t>(w) * static_cast<size_t>(h));
-    std::cerr << "[DBG][DICOM] Prepared CV_8UC1 buffer for view.\n";
+    m_meta << "Format: DICOM (8-bit display)";
+    m_meta << QString("Dims: %1x%2").arg(dicom8.cols).arg(dicom8.rows);
+    m_display8 = dicom8.clone();
+    std::cerr << "[DBG][Load][DICOM] OK -> dims " << dicom8.cols << "x" << dicom8.rows << "\n";
     return true;
 }
 
-} // namespace
-
-// ---------------- controller ----------------
-AppController::AppController(MainWindow* view) : m_view(view) {}
-
-void AppController::loadAndShow(const QString& h5_path_q)
+bool AppController::load_hdf5(const std::string& path)
 {
-    const std::string path = h5_path_q.toStdString();
-    std::cerr << "[DBG][Controller] Loading file: " << path << "\n";
-
-    // --- NEW: start collecting metadata lines
-    QStringList meta;
-    meta << ("Source: " + h5_path_q);
-    meta << ("Loaded at: " + QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss"));
-
-    constexpr bool kPreferPreRecon = false;
-
-    std::vector<float> pre;
-    int preH = 0, preW = 0;
-    std::string dbg;
-    bool ok = false;
-
-    h5_silence_once();
-    std::cerr << "[DBG][Controller] Probing file flavor...\n";
-    const ProbeResult pr = probe_hdf5_flavor(path);
-
-    meta << QString("Probe: %1 traj='%2'")
-                .arg(flavor_str(pr.flavor))
-                .arg(QString::fromStdString(pr.trajectory));
-    meta << QString("Flags: xml=%1 acq=%2 kspace=%3 img=%4")
-                .arg(pr.has_xml).arg(pr.has_acq).arg(pr.has_kspace).arg(pr.has_embedded_img);
-    meta << QString("Reason: %1").arg(QString::fromStdString(pr.reason));
-
-    // --- Route/load, but also populate 'meta' and push it to the view before returning
-
-    switch (pr.flavor) {
-    case DataFlavor::NotHDF5: {
-        std::cerr << "[DBG][Controller] Not an HDF5 container. Trying DICOM reader...\n";
-        cv::Mat dicom8;
-        std::string why;
-
-        if (read_dicom_gray8(path, dicom8, &why)) {
-            meta << "Format: DICOM";
-            meta << QString("Dims: %1x%2").arg(dicom8.cols).arg(dicom8.rows);
-            m_view->setMetadata(meta);
-            std::cerr << "[DBG][Controller] DICOM read OK. Sending to view.\n";
-            m_view->setImage(dicom8);
-            return;
-        } else {
-            meta << QString("DICOM read failed: %1").arg(QString::fromStdString(why));
-            m_view->setMetadata(meta);
-            std::cerr << "[ERR][Controller] DICOM read failed: " << why << "\n";
-            m_view->setImage(imgutil::make_test_gradient(512, 512));
-            return;
-        }
-    }
-
-    case DataFlavor::FastMRI: {
-        std::cerr << "[DBG][Controller] Using fastMRI loader.\n";
-        ok = mri::load_fastmri_kspace(path, m_ks, &pre, &preH, &preW, &dbg);
-        std::cerr << dbg;
-        meta << "Format: HDF5 / fastMRI";
-        break;
-    }
-
-    case DataFlavor::ISMRMRD_Cartesian:
-    case DataFlavor::ISMRMRD_Unknown: {
-        std::cerr << "[DBG][Controller] Using ISMRMRD loader (Cartesian or unknown traj).\n";
-        ok = mri::load_ismrmrd_any(path, m_ks, &pre, &preH, &preW, &dbg);
-        std::cerr << dbg;
-        meta << "Format: HDF5 / ISMRMRD";
-        break;
-    }
-
-    case DataFlavor::ISMRMRD_NonCartesian: {
-        std::cerr << "[DBG][Controller] Non-Cartesian ISMRMRD -> k-space disabled; will try embedded image.\n";
-        ok = mri::load_ismrmrd_any(path, m_ks, &pre, &preH, &preW, &dbg);
-        std::cerr << dbg;
-        meta << "Format: HDF5 / ISMRMRD (non-Cartesian)";
-        break;
-    }
-
-    case DataFlavor::HDF5_Unknown:
-    default: {
-        std::cerr << "[DBG][Controller][WARN] Unrecognized HDF5 layout. Trying fastMRI then ISMRMRD as fallback.\n";
-        ok = mri::load_fastmri_kspace(path, m_ks, &pre, &preH, &preW, &dbg);
-        std::cerr << dbg;
-        if (ok) meta << "Format: HDF5 (unknown) → fastMRI path";
-        if (!ok) {
-            dbg.clear();
-            ok = mri::load_ismrmrd_any(path, m_ks, &pre, &preH, &preW, &dbg);
-            std::cerr << dbg;
-            if (ok) meta << "Format: HDF5 (unknown) → ISMRMRD path";
-        }
-        break;
-    }
-    }
+    std::cerr << "[DBG][Load][HDF5] load_hdf5_any start...\n";
+    std::string loadDbg;
+    bool ok = io::load_hdf5_any(path, m_ks, &m_pre, &m_preH, &m_preW, &loadDbg);
+    std::cerr << loadDbg;
 
     if (!ok) {
-        meta << "No supported datasets found (fastMRI/ISMRMRD). Showing gradient.";
-        m_view->setMetadata(meta);
-        std::cerr << "[ERR][Controller] No supported datasets found (fastMRI/ISMRMRD).\n";
-        m_view->setImage(imgutil::make_test_gradient(512, 512));
+        m_meta << "HDF5 load failed (no supported datasets).";
+        std::cerr << "[ERR][Load][HDF5] load_hdf5_any failed\n";
+        return false;
+    }
+
+    if (!m_ks.host.empty()) {
+        m_meta << QString("K-space: coils=%1 ny=%2 nx=%3 buf=%4")
+        .arg(m_ks.coils).arg(m_ks.ny).arg(m_ks.nx)
+            .arg((qulonglong)m_ks.host.size());
+        std::cerr << "[DBG][Load][HDF5] K-space: coils=" << m_ks.coils
+                  << " ny=" << m_ks.ny << " nx=" << m_ks.nx
+                  << " host.size=" << m_ks.host.size() << "\n";
+    } else {
+        std::cerr << "[DBG][Load][HDF5] No k-space present\n";
+    }
+
+    if (!m_pre.empty()) {
+        m_meta << QString("Embedded image: %1x%2").arg(m_preW).arg(m_preH);
+        std::cerr << "[DBG][Load][HDF5] Embedded preview: " << m_preW << "x" << m_preH << "\n";
+    }
+    return true;
+}
+
+bool AppController::try_gpu_recon()
+{
+    if (m_ks.host.empty()) {
+        std::cerr << "[DBG][Load][GPU] No k-space; skipping GPU recon\n";
+        return false;
+    }
+
+    std::cerr << "[DBG][Load][GPU] Running GPU IFFT+RSS...\n";
+    std::vector<float> rssf;
+    int outH = 0, outW = 0;
+    std::string reconDbg;
+    bool gpu_ok = false;
+
+    try {
+        gpu_ok = mri::ifft_rss_gpu(m_ks, rssf, outH, outW, &reconDbg);
+    } catch (const std::exception& e) {
+        std::cerr << "[EXC][Load][GPU] ifft_rss_gpu threw: " << e.what() << "\n";
+        gpu_ok = false;
+    } catch (...) {
+        std::cerr << "[EXC][Load][GPU] ifft_rss_gpu threw unknown exception\n";
+        gpu_ok = false;
+    }
+    std::cerr << reconDbg;
+
+    if (!gpu_ok) {
+        std::cerr << "[ERR][Load][GPU] GPU recon failed\n";
+        return false;
+    }
+
+    const int N = outH * outW;
+    if ((int)rssf.size() != N || outH <= 0 || outW <= 0) {
+        std::cerr << "[ERR][Load][GPU] Bad dims from GPU: H=" << outH
+                  << " W=" << outW << " rss.size=" << rssf.size()
+                  << " expected=" << N << "\n";
+        return false;
+    }
+
+    cv::Mat u8 = vecf32_to_u8(rssf, outH, outW);
+    if (u8.empty()) {
+        std::cerr << "[ERR][Load][GPU] Conversion to 8-bit failed\n";
+        return false;
+    }
+
+    m_meta << QString("Display: GPU IFFT + RSS (%1x%2)").arg(outW).arg(outH);
+    if (outH != m_ks.ny || outW != m_ks.nx) {
+        m_meta << QString("Note: GPU returned %1x%2 (input k-space %3x%4)")
+        .arg(outW).arg(outH).arg(m_ks.nx).arg(m_ks.ny);
+    }
+    m_display8 = u8.clone();
+    std::cerr << "[DBG][Load][GPU] Recon OK; dims " << outW << "x" << outH << "\n";
+    return true;
+}
+
+bool AppController::use_embedded_preview()
+{
+    if (m_pre.empty() || m_preH <= 0 || m_preW <= 0) {
+        std::cerr << "[DBG][Load][Embed] No embedded preview available\n";
+        return false;
+    }
+    std::cerr << "[DBG][Load][Embed] Using embedded preview fallback\n";
+    cv::Mat f32(m_preH, m_preW, CV_32F, m_pre.data());
+    cv::Mat u8 = to_u8(f32);
+    if (u8.empty()) {
+        std::cerr << "[ERR][Load][Embed] to_u8 returned empty image\n";
+        return false;
+    }
+    m_meta << "Display: Embedded pre-recon (fallback)";
+    m_display8 = u8.clone();
+    return true;
+}
+
+void AppController::prepare_fallback()
+{
+    std::cerr << "[DBG][Load] Preparing gradient fallback\n";
+    m_meta << "Display: fallback gradient";
+    m_display8 = make_gradient(512, 512);
+}
+
+// ===============================
+// Show pipeline
+// ===============================
+void AppController::show()
+{
+    std::cerr << "[DBG][Show] show() -> defer via QTimer::singleShot(0ms)\n";
+    using namespace std::chrono_literals; // enables 0ms literal
+    QTimer::singleShot(0ms, m_view, [this]() {
+        std::cerr << "[DBG][Show] (deferred) entering doShowNow()\n";
+        this->doShowNow();
+    });
+}
+
+
+void AppController::doShowNow()
+{
+    if (m_display8.empty() || m_display8.type() != CV_8UC1) {
+        std::cerr << "[WRN][Show] m_display8 empty; forcing gradient fallback in doShowNow()\n";
+        QStringList meta = m_meta;
+        meta << "Display: forced gradient (no valid 8-bit image)";
+        show_gradient_with_meta(meta);
         return;
     }
 
-    if (kPreferPreRecon && !pre.empty()) {
-        meta << QString("PreRecon used: reconstruction_rss %1x%2").arg(preW).arg(preH);
-        m_view->setMetadata(meta);
-        std::cerr << "[DBG][Controller] Using pre-reconstructed image (" << preW << "x" << preH << ").\n";
-        m_view->setImage(imgutil::to_8u(pre, preH, preW));
-        return;
-    }
+    // (Optional) set title here so you can see it appear with the image
+    // m_view->setWindowTitle(...); // same code we discussed earlier
 
-    if ((m_ks.host.empty() || m_ks.coils <= 0 || m_ks.nx <= 0 || m_ks.ny <= 0) && !pre.empty()) {
-        meta << QString("Embedded image used: %1x%2").arg(preW).arg(preH);
-        m_view->setMetadata(meta);
-        std::cerr << "[DBG][Controller] No usable k-space; displaying embedded image (" << preW << "x" << preH << ").\n";
-        m_view->setImage(imgutil::to_8u(pre, preH, preW));
-        return;
-    }
+    show_metadata_and_image(m_meta, m_display8); // this calls into the View
+    std::cerr << "[DBG][Show] doShowNow() complete\n";
+}
 
-    // GPU recon path
-    meta << QString("K-space: C=%1 ny=%2 nx=%3").arg(m_ks.coils).arg(m_ks.ny).arg(m_ks.nx);
-    std::string recon_dbg;
-    if (!mri::ifft_rss_gpu(m_ks, m_image, &recon_dbg)) {
-        meta << "Reconstruction: IFFT+RSS GPU FAILED";
-        m_view->setMetadata(meta);
-        std::cerr << "[ERR][Controller] Reconstruction failed.\n";
 
-        if (!pre.empty()) {
-            meta << QString("Fallback: preRecon %1x%2").arg(preW).arg(preH);
-            m_view->setMetadata(meta);
-            std::cerr << "[DBG][Controller] Falling back to pre-reconstructed image ("
-                      << preW << "x" << preH << ").\n";
-            m_view->setImage(imgutil::to_8u(pre, preH, preW));
-            return;
-        }
-        m_view->setImage(imgutil::make_test_gradient(std::max(64, m_ks.ny), std::max(64, m_ks.nx)));
-        return;
-    }
-    std::cerr << recon_dbg;
-    meta << "Reconstruction: IFFT + RSS (GPU) OK";
-
-    const int outH = std::min(m_ks.ny, m_ks.nx);
-    const int outW = outH;
-    meta << QString("Display crop: %1x%2 (square)").arg(outW).arg(outH);
+void AppController::show_metadata_and_image(const QStringList& meta, const cv::Mat& u8)
+{
+    std::cerr << "[DBG][Show] show_metadata_and_image() dims=" << u8.cols << "x" << u8.rows << "\n";
     m_view->setMetadata(meta);
+    m_view->setImage(u8);
+    m_lastImg8 = u8.clone();
+    std::cerr << "[DBG][Show] Image pushed to view\n";
+}
 
-    m_view->setImage(imgutil::to_8u(m_image, outH, outW));
-    std::cerr << "[DBG][Controller] Image sent to view.\n";
+
+void AppController::show_gradient_with_meta(const QStringList& meta)
+{
+    std::cerr << "[DBG][Show] show_gradient_with_meta()\n";
+    cv::Mat grad = make_gradient(512, 512);
+    m_view->setMetadata(meta);
+    m_view->setImage(grad);
+    m_lastImg8 = grad.clone();
+}
+
+// ===============================
+// Save operations (unchanged)
+// ===============================
+void AppController::savePNG(const QString& outPath)
+{
+    std::cerr << "[DBG][Controller] savePNG -> " << outPath.toStdString() << "\n";
+    if (m_lastImg8.empty() || m_lastImg8.type() != CV_8UC1) {
+        std::cerr << "[ERR][Controller] savePNG: no 8-bit image available to save.\n";
+        return;
+    }
+    const std::string path_utf8 = outPath.toUtf8().constData(); // UTF-8 for OpenCV
+    std::string why;
+    if (!io::write_png(path_utf8, m_lastImg8, &why)) {
+        std::cerr << "[ERR][Controller] PNG save failed: " << why << "\n";
+    } else {
+        std::cerr << "[DBG][Controller] PNG saved OK.\n";
+    }
+}
+
+void AppController::saveDICOM(const QString& outPath)
+{
+    std::cerr << "[DBG][Controller] saveDICOM -> " << outPath.toStdString() << "\n";
+    if (m_lastImg8.empty() || m_lastImg8.type() != CV_8UC1) {
+        std::cerr << "[ERR][Controller] saveDICOM: no 8-bit image available to save.\n";
+        return;
+    }
+    const std::string path_local8 = outPath.toLocal8Bit().constData(); // local 8-bit for DCMTK
+    std::string why;
+    if (!io::write_dicom_sc_gray8(path_local8, m_lastImg8, &why)) {
+        std::cerr << "[ERR][Controller] DICOM save failed: " << why << "\n";
+    } else {
+        std::cerr << "[DBG][Controller] DICOM saved OK.\n";
+    }
 }

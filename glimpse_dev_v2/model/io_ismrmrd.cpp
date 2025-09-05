@@ -21,6 +21,19 @@
 #include <ismrmrd/ismrmrd.h>
 #include <ismrmrd/xml.h>
 
+
+// ---- OpenMP debug helper ----
+#if defined(_OPENMP)
+#include <omp.h>
+static inline int OMP_MAX_THREADS() { return omp_get_max_threads(); }
+#else
+#include <thread>
+static inline int OMP_MAX_THREADS() {
+    return static_cast<int>(std::thread::hardware_concurrency());
+}
+#endif
+
+
 // -----------------------------------------------------------------------------
 // helpers (anonymous namespace) — prototypes first for clarity
 // -----------------------------------------------------------------------------
@@ -442,27 +455,42 @@ static bool try_read_any_kspace(H5::H5File& f, mri::KSpace& ks, std::string* dbg
     return false;
 }
 
+// REQUIRE: at top of this file, add
+//   #ifdef _OPENMP
+//   #include <omp.h>
+//   #endif
+
 static bool assemble_from_acquisitions(const std::string& path,
                                        const std::string& xml,
                                        mri::KSpace& ks,
                                        std::string* dbg)
 {
-    dbg_line(dbg, "[ismrmrd][acq] attempting Cartesian assembly from /dataset/acquisitions...");
+    dbg_line(dbg, "[ismrmrd][acq] attempting Cartesian assembly from /dataset/acquisitions.");
 
-    // header hints + hard trajectory guard
+    // ---- 0) Header hints + hard guard on trajectory ---------------------------------
     int nx_hdr=0, ny_hdr=0, ymin_hdr=0, ycenter_hdr=0, ymax_hdr=-1;
-    std::string traj="unknown";
+    std::string traj = "unknown";
     parse_header_dims(xml, nx_hdr, ny_hdr, ymin_hdr, ycenter_hdr, ymax_hdr, traj, dbg);
     if (!traj.empty() && traj != "cartesian") {
         dbg_line(dbg, "[ismrmrd][guard] Non-cartesian trajectory '", traj, "' -> skipping acquisition assembly.");
         return false;
     }
 
+    // ---- 1) Open dataset / probe acquisition count -----------------------------------
     ISMRMRD::Dataset ds(path.c_str(), "/dataset", false);
     const uint32_t nAcq = ds.getNumberOfAcquisitions();
-    if (nAcq == 0) { dbg_line(dbg, "[ismrmrd][acq][ERR] no acquisitions"); return false; }
+    if (nAcq == 0) {
+        dbg_line(dbg, "[ismrmrd][acq][ERR] no acquisitions");
+        return false;
+    }
 
-    // Pass 0: scan index ranges (after basic flag filtering)
+#ifdef _OPENMP
+    dbg_line(dbg, "[OMP][assemble] omp_get_max_threads()=", omp_get_max_threads());
+#else
+    dbg_line(dbg, "[OMP][assemble] OpenMP disabled at compile time");
+#endif
+
+    // ---- 2) PASS 0: scan index ranges after filtering obvious non-imaging flags ------
     struct Range { int mn=INT_MAX, mx=INT_MIN; void see(int v){ mn=std::min(mn,v); mx=std::max(mx,v);} };
     Range r_slice, r_set, r_phase, r_contrast, r_segment, r_rep, r_avg, r_ky;
 
@@ -491,27 +519,30 @@ static bool assemble_from_acquisitions(const std::string& path,
     const int keep_phase    = choose(r_phase);
     const int keep_contrast = choose(r_contrast);
     const int keep_segment  = choose(r_segment);
-    const int keep_rep      = 0;
+    const int keep_rep      = 0; // pick earliest if present (consistent with your code)
     const int keep_avg      = 0;
 
-    dbg_line(dbg, "[ismrmrd][acq] index ranges: slice[", r_slice.mn, ",", r_slice.mx,
-             "] set[", r_set.mn, ",", r_set.mx,
-             "] phase[", r_phase.mn, ",", r_phase.mx,
-             "] contrast[", r_contrast.mn, ",", r_contrast.mx,
-             "] segment[", r_segment.mn, ",", r_segment.mx,
-             "] repetition[", r_rep.mn, ",", r_rep.mx,
-             "] average[", r_avg.mn, ",", r_avg.mx, "]");
-    dbg_line(dbg, "[ismrmrd][acq] will keep: slice=", keep_slice, " set=", keep_set,
-             " phase=", keep_phase, " contrast=", keep_contrast,
+    dbg_line(dbg, "[ismrmrd][acq] index ranges:",
+             " slice[", r_slice.mn, ",", r_slice.mx, "]",
+             " set[",   r_set.mn,   ",", r_set.mx,   "]",
+             " phase[", r_phase.mn, ",", r_phase.mx, "]",
+             " contrast[", r_contrast.mn, ",", r_contrast.mx, "]",
+             " segment[",  r_segment.mn,  ",", r_segment.mx,  "]",
+             " repetition[", r_rep.mn, ",", r_rep.mx, "]",
+             " average[",   r_avg.mn, ",", r_avg.mx, "]");
+    dbg_line(dbg, "[ismrmrd][acq] selected subspace: slice=", keep_slice,
+             " set=", keep_set, " phase=", keep_phase, " contrast=", keep_contrast,
              " segment=", keep_segment, " repetition=", keep_rep, " average=", keep_avg);
-    if (skipped_noise||skipped_nav||skipped_calib) {
+
+    if (skipped_noise || skipped_nav || skipped_calib) {
         dbg_line(dbg, "[ismrmrd][acq] skipped at scan{noise=", skipped_noise,
                  ", nav=", skipped_nav, ", calib=", skipped_calib, "}");
     }
 
-    // Pass 1: decide dims from chosen subspace
+    // ---- 3) PASS 1: decide dims from chosen subspace ---------------------------------
     int ky_min_obs = INT_MAX, ky_max_obs = INT_MIN, nxmax = 0, Cmax = 0;
-    uint64_t accepted=0;
+    uint64_t accepted = 0;
+
     for (uint32_t i=0; i<nAcq; ++i) {
         ISMRMRD::Acquisition a; ds.readAcquisition(i, a);
         if (a.isFlagSet(ISMRMRD::ISMRMRD_ACQ_IS_NOISE_MEASUREMENT)) continue;
@@ -520,13 +551,13 @@ static bool assemble_from_acquisitions(const std::string& path,
             a.isFlagSet(ISMRMRD::ISMRMRD_ACQ_IS_PARALLEL_CALIBRATION_AND_IMAGING)) continue;
 
         const auto& h = a.getHead();
-        if ((int)h.idx.slice    != keep_slice)    continue;
-        if ((int)h.idx.set      != keep_set)      continue;
-        if ((int)h.idx.phase    != keep_phase)    continue;
-        if ((int)h.idx.contrast != keep_contrast) continue;
-        if ((int)h.idx.segment  != keep_segment)  continue;
-        if ((int)h.idx.repetition != keep_rep)    continue;
-        if ((int)h.idx.average    != keep_avg)    continue;
+        if ((int)h.idx.slice     != keep_slice)    continue;
+        if ((int)h.idx.set       != keep_set)      continue;
+        if ((int)h.idx.phase     != keep_phase)    continue;
+        if ((int)h.idx.contrast  != keep_contrast) continue;
+        if ((int)h.idx.segment   != keep_segment)  continue;
+        if ((int)h.idx.repetition!= keep_rep)      continue;
+        if ((int)h.idx.average   != keep_avg)      continue;
 
         ++accepted;
         ky_min_obs = std::min<int>(ky_min_obs, (int)h.idx.kspace_encode_step_1);
@@ -534,55 +565,56 @@ static bool assemble_from_acquisitions(const std::string& path,
         nxmax      = std::max<int>(nxmax, a.number_of_samples());
         Cmax       = std::max<int>(Cmax, a.active_channels());
     }
-    if (accepted == 0) { dbg_line(dbg, "[ismrmrd][acq][ERR] no acquisitions match selected subspace"); return false; }
+    if (accepted == 0) {
+        dbg_line(dbg, "[ismrmrd][acq][ERR] no acquisitions match selected subspace");
+        return false;
+    }
 
+    // From header if consistent; otherwise from observed
     int ymin = (ymax_hdr >= ymin_hdr) ? ymin_hdr : ky_min_obs;
     int ymax = (ymax_hdr >= ymin_hdr) ? ymax_hdr : ky_max_obs;
-
     if (ny_hdr > 0 && ymax >= ny_hdr) {
         dbg_line(dbg, "[ismrmrd][acq][FIX] ymax(", ymax, ") >= ny_hdr(", ny_hdr, ") -> clamp to ", ny_hdr-1);
         ymax = ny_hdr - 1;
     }
 
-    int ny = (ymax >= ymin) ? (ymax - ymin + 1) : std::max(0, ny_hdr);
-    int nx = std::max(nx_hdr, nxmax);
-    int C  = std::max(Cmax, 1);
+    const int ny = std::max(0, ymax - ymin + 1);
+    const int nx = (nx_hdr > 0) ? std::min(nx_hdr, nxmax) : nxmax;
+    const int C  = std::max(1, Cmax);
 
-    if (nx<=0 || ny<=0 || C<=0) {
-        dbg_line(dbg, "[ismrmrd][acq][ERR] invalid dims: C=", C, " ny=", ny, " nx=", nx,
-                 " (ymin=", ymin, " ymax=", ymax, ")");
+    if (ny <= 0 || nx <= 0) {
+        dbg_line(dbg, "[ismrmrd][acq][ERR] computed dims invalid: C=", C, " ny=", ny, " nx=", nx);
         return false;
     }
 
-    dbg_line(dbg, "[ismrmrd][acq] nAcq=", nAcq, " accepted=", accepted,
-             " nxmax=", nxmax, " Cmax=", Cmax);
-    dbg_line(dbg, "[ismrmrd][acq] final dims -> C=", C, " ny=", ny, " nx=", nx,
-             " (ymin=", ymin, " ymax=", ymax, ")");
-
-    // Pass 2: first-seen per (ky,coil), skip duplicates
     ks.coils = C; ks.ny = ny; ks.nx = nx;
-    ks.host.assign((size_t)C*ny*nx, std::complex<float>(0.f, 0.f));
+    ks.host.assign((size_t)C * ny * nx, std::complex<float>(0.f, 0.f));
 
-    std::vector<uint8_t> written((size_t)C*ny, 0);
-    uint64_t filled_pairs=0, skipped_dup=0, clipped_samples=0, padded_samples=0;
+    std::vector<uint8_t> written((size_t)C * ny, 0);  // guard for duplicates: one bit per (ky, coil)
+    uint64_t filled_pairs = 0, skipped_dup = 0, clipped_samples = 0, padded_samples = 0;
 
+    dbg_line(dbg, "[ismrmrd][acq] dims decided: C=", C, " ny=", ny, " nx=", nx,
+             " (ymin=", ymin, " .. ymax=", ymax, ")");
+
+    // ---- 4) PASS 2: fill k-space buffer (OpenMP on per-sample copy) ------------------
     for (uint32_t i=0; i<nAcq; ++i) {
         ISMRMRD::Acquisition a; ds.readAcquisition(i, a);
+        // Same flag filters
         if (a.isFlagSet(ISMRMRD::ISMRMRD_ACQ_IS_NOISE_MEASUREMENT)) continue;
         if (a.isFlagSet(ISMRMRD::ISMRMRD_ACQ_IS_NAVIGATION_DATA))   continue;
         if (a.isFlagSet(ISMRMRD::ISMRMRD_ACQ_IS_PARALLEL_CALIBRATION) ||
             a.isFlagSet(ISMRMRD::ISMRMRD_ACQ_IS_PARALLEL_CALIBRATION_AND_IMAGING)) continue;
 
         const auto& h = a.getHead();
-        if ((int)h.idx.slice    != keep_slice)    continue;
-        if ((int)h.idx.set      != keep_set)      continue;
-        if ((int)h.idx.phase    != keep_phase)    continue;
-        if ((int)h.idx.contrast != keep_contrast) continue;
-        if ((int)h.idx.segment  != keep_segment)  continue;
-        if ((int)h.idx.repetition != keep_rep)    continue;
-        if ((int)h.idx.average    != keep_avg)    continue;
+        if ((int)h.idx.slice     != keep_slice)    continue;
+        if ((int)h.idx.set       != keep_set)      continue;
+        if ((int)h.idx.phase     != keep_phase)    continue;
+        if ((int)h.idx.contrast  != keep_contrast) continue;
+        if ((int)h.idx.segment   != keep_segment)  continue;
+        if ((int)h.idx.repetition!= keep_rep)      continue;
+        if ((int)h.idx.average   != keep_avg)      continue;
 
-        int ky = (int)h.idx.kspace_encode_step_1;
+        const int ky = (int)h.idx.kspace_encode_step_1;
         if (ky < ymin || ky > ymax) continue;
         const int y = ky - ymin;
 
@@ -590,12 +622,20 @@ static bool assemble_from_acquisitions(const std::string& path,
         const int ch = std::min<int>(a.active_channels(), C);
         if (ns > nx) { clipped_samples += (uint64_t)(ns - nx) * ch; ns = nx; }
 
-        for (int c=0; c<ch; ++c) {
-            const size_t pair = (size_t)y*C + (size_t)c;
-            if (written[pair]) { ++skipped_dup; continue; }  // first-seen wins
+        for (int c = 0; c < ch; ++c) {
+            const size_t pair = (size_t)y * C + (size_t)c;
+            if (written[pair]) { ++skipped_dup; continue; } // first-seen wins
 
-            const size_t base = (size_t)c*ny*nx + (size_t)y*nx;
-            for (int s=0; s<ns; ++s) ks.host[base + s] = a.data(s, c);
+            const size_t base = (size_t)c * ny * nx + (size_t)y * nx;
+
+#ifdef _OPENMP
+// Parallelize the per-sample copy along readout (fast, independent)
+#pragma omp parallel for if(ns > 64) schedule(static)
+#endif
+            for (int s = 0; s < ns; ++s) {
+                ks.host[base + s] = a.data(s, c); // complex<float> copy
+            }
+
             if (ns < nx) padded_samples += (uint64_t)(nx - ns);
 
             written[pair] = 1;
@@ -603,7 +643,7 @@ static bool assemble_from_acquisitions(const std::string& path,
         }
     }
 
-    const size_t missing_pairs = (size_t)C*ny - filled_pairs;
+    const size_t missing_pairs = (size_t)C * ny - filled_pairs;
     dbg_line(dbg, "[ismrmrd][acq] wrote unique (ky,coil) pairs = ", filled_pairs, " / ", (size_t)C*ny);
     dbg_line(dbg, "[ismrmrd][acq] skipped duplicates=", skipped_dup,
              " missing_pairs=", missing_pairs,
