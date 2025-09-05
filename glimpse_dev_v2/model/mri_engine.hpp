@@ -17,8 +17,8 @@ struct KSpace {
 // Initialize CUDA and print device info (safe to call multiple times)
 void init_cuda_and_versions(int device = 0);
 
-// Compute IFFT (2D) per coil + Root-Sum-of-Squares on GPU.
-// Returns true on success. 'out_img' is ny*nx float image (magnitude).
-bool ifft_rss_gpu(const KSpace& ks, std::vector<float>& out_img, std::string* dbg_log = nullptr);
-
+bool ifft_rss_gpu(const mri::KSpace& ks,
+                  std::vector<float>& out,
+                  int& outH, int& outW,
+                  std::string* dbg = nullptr);
 } // namespace mri

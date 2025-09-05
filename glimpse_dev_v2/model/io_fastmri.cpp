@@ -7,6 +7,18 @@
 #include <complex>
 #include <vector>
 
+// ---- OpenMP debug helper (top of file) ----
+#if defined(_OPENMP)
+#include <omp.h>
+static inline int OMP_MAX_THREADS() { return omp_get_max_threads(); }
+#else
+#include <thread>
+static inline int OMP_MAX_THREADS() {
+    return static_cast<int>(std::thread::hardware_concurrency());
+}
+#endif
+
+
 namespace {
 template<class... Args>
 void dbg_line(std::string* dbg, Args&&... a) {
@@ -79,8 +91,18 @@ static bool read_kspace_float_tail2(H5::DataSet& ds, H5::DataSpace& sp,
         H5::DataSpace ms(rank, count.data());
         ds.read(tmp.data(), H5::PredType::NATIVE_FLOAT, ms, fs);
 
-        for (size_t i=0;i<N;++i)
-            ks.host[i] = std::complex<float>(tmp[2*i+0], tmp[2*i+1]);
+        // --- Parallel pack: tmp[{2*i,2*i+1}] -> ks.host[i] ---
+        std::cerr << "[DBG][OMP][fastmri-tail2] N=" << (long long)N
+                  << " threads=" << OMP_MAX_THREADS() << "\n";
+
+        const long long Nll = static_cast<long long>(N);
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
+        for (long long i = 0; i < Nll; ++i) {
+            const size_t ii = static_cast<size_t>(i);
+            ks.host[ii] = std::complex<float>(tmp[2*ii + 0], tmp[2*ii + 1]);
+        }
 
         dbg_line(dbg, "[io] Loaded float tail-2 kspace: C=", ks.coils, " ny=", ks.ny, " nx=", ks.nx);
         return true;
@@ -91,7 +113,6 @@ static bool read_kspace_float_tail2(H5::DataSet& ds, H5::DataSpace& sp,
     return false;
 }
 
-// ----------- compound complex kspace (2 float members) -----------
 static bool read_kspace_compound(H5::DataSet& ds, H5::DataSpace& sp,
                                  KSpace& ks, std::string* dbg)
 {
@@ -122,11 +143,24 @@ static bool read_kspace_compound(H5::DataSet& ds, H5::DataSpace& sp,
         ks.coils=(int)C; ks.ny=(int)ny; ks.nx=(int)nx;
         const size_t N=(size_t)C*ny*nx; ks.host.resize(N);
         std::vector<float> tmp(N*2);
+
         H5::DataSpace fs = ds.getSpace();
         std::vector<hsize_t> count(rank); for (int i=0;i<rank;++i) count[i]=dims[i];
         H5::DataSpace ms(rank, count.data());
         ds.read(tmp.data(), memType, ms, fs);
-        for (size_t i=0;i<N;++i) ks.host[i]=std::complex<float>(tmp[2*i], tmp[2*i+1]);
+
+        std::cerr << "[DBG][OMP][fastmri-comp3] N=" << (long long)N
+                  << " threads=" << OMP_MAX_THREADS() << "\n";
+
+        const long long Nll = static_cast<long long>(N);
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
+        for (long long i = 0; i < Nll; ++i) {
+            const size_t ii = static_cast<size_t>(i);
+            ks.host[ii] = std::complex<float>(tmp[2*ii + 0], tmp[2*ii + 1]);
+        }
+
         dbg_line(dbg, "[io] Loaded compound kspace: C=", ks.coils, " ny=", ks.ny, " nx=", ks.nx);
         return true;
     };
@@ -136,12 +170,25 @@ static bool read_kspace_compound(H5::DataSet& ds, H5::DataSpace& sp,
         ks.coils=(int)C; ks.ny=(int)ny; ks.nx=(int)nx;
         const size_t N=(size_t)C*ny*nx; ks.host.resize(N);
         std::vector<float> tmp(N*2);
+
         H5::DataSpace fs = ds.getSpace();
         hsize_t start[4] = {0,0,0,0}, count[4] = {1,C,ny,nx};
         fs.selectHyperslab(H5S_SELECT_SET, count, start);
         H5::DataSpace ms(4, count);
         ds.read(tmp.data(), memType, ms, fs);
-        for (size_t i=0;i<N;++i) ks.host[i]=std::complex<float>(tmp[2*i], tmp[2*i+1]);
+
+        std::cerr << "[DBG][OMP][fastmri-comp4] N=" << (long long)N
+                  << " threads=" << OMP_MAX_THREADS() << "\n";
+
+        const long long Nll = static_cast<long long>(N);
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
+        for (long long i = 0; i < Nll; ++i) {
+            const size_t ii = static_cast<size_t>(i);
+            ks.host[ii] = std::complex<float>(tmp[2*ii + 0], tmp[2*ii + 1]);
+        }
+
         dbg_line(dbg, "[io] Loaded compound rank-4 slice0: C=", ks.coils, " ny=", ks.ny, " nx=", ks.nx);
         return true;
     };
@@ -151,6 +198,8 @@ static bool read_kspace_compound(H5::DataSet& ds, H5::DataSpace& sp,
     dbg_line(dbg, "[io][WARN] compound rank=", rank, " not handled");
     return false;
 }
+
+
 
 // ----------- public loader -----------
 bool load_fastmri_kspace(const std::string& path,
