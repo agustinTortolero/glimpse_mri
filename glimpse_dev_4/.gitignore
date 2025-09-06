@@ -1,0 +1,61 @@
+# ---- Qt / qmake / Qt Creator ----
+*.user
+*.pro.user*
+*.qmake.stash
+Makefile*
+moc/
+*.moc
+ui_*.h
+qrc_*.cpp
+*.rcc
+*.qrc.dep
+
+# ---- Build artifacts (MSVC/MinGW) ----
+*.o
+*.obj
+*.pch
+*.pdb
+*.idb
+*.ilk
+*.exp
+*.lib
+*.a
+*.dll
+*.exe
+*.manifest
+*.rsp
+*.tmp
+*.log
+
+# ---- Build dirs ----
+build/
+build-*/
+debug/
+release/
+x64/
+bin/
+lib/
+
+# ---- IDEs ----
+.vs/
+.vscode/
+*.VC.db
+*.VC.opendb
+*.creator*
+*.files
+*.includes
+*.autosave
+
+# ---- Generated outputs (samples) ----
+# Remove these lines if you WANT to track example exports
+*.png
+*.dcm
+
+# ---- Datasets / raw files (keep repo small) ----
+*.h5
+*.hdf5
+*.mrd
+
+# ---- OS noise ----
+Thumbs.db
+.DS_Store
