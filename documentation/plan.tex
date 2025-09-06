@@ -1,0 +1,155 @@
+\documentclass[11pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{hyperref}
+\usepackage{enumitem}
+
+\setlist[itemize]{topsep=4pt,itemsep=2pt,parsep=0pt}
+\setlist[enumerate]{topsep=4pt,itemsep=2pt,parsep=0pt}
+
+\title{Glimpse MRI}
+\date{\today}
+
+\begin{document}
+	\maketitle
+	
+	\section*{Project Summary}
+	Glimpse MRI is a Windows High-Performance Computing (HPC) application for visualizing MRI scans and exporting them to common image formats. Built in modern C++/Qt and accelerated with NVIDIA CUDA, it supports imaging R\&D teams working on MRI algorithms, hardware, and methodologies. Written in C++ with Qt~6, Glimpse MRI offloads compute-intensive MRI stages---coil noise pre-whitening, CG-SENSE reconstruction, and post-filtering---to NVIDIA GPUs via CUDA (cuFFT, cuBLAS, custom kernels). It reads DICOM and HDF5 (fastMRI/ISMRMRD), offers slice-wise inspection/export, and includes hooks for parameter sweeps and PSNR/SSIM-style QA to quantify improvements. Glimpse MRI is a Windows Model--View--Controller (MVC) application, built with Qt, for viewing and converting MRI images. It supports both DICOM and raw MRI data in fastMRI and ISMRMRD HDF5 formats, with CUDA-accelerated reconstruction on the GPU. \textbf{Note:} For research/education only---not for clinical use.
+	
+	\section*{Overview}
+	\begin{itemize}
+		\item Windows HPC application for visualizing MRI scans and exporting to common image formats.
+		\item Built in C++/Qt; accelerated with NVIDIA CUDA for MRI R\&D workflows.
+		\item GPU-offloaded stages: coil noise pre-whitening, CG-SENSE reconstruction, post-filtering (cuFFT, cuBLAS, custom kernels).
+		\item Reads DICOM and HDF5 (fastMRI / ISMRMRD); slice-wise inspection/export; hooks for parameter sweeps and QA.
+		\item \textbf{QA will be performed with PSNR and SSIM}.
+		\item Research/education tool; not for clinical use.
+	\end{itemize}
+	
+	\section*{Features}
+	\begin{itemize}
+		\item \textbf{File support}
+		\begin{itemize}
+			\item DICOM images
+			\item HDF5 (.h5) datasets in fastMRI and ISMRMRD formats
+		\end{itemize}
+		\item \textbf{Reconstruction and processing}
+		\begin{itemize}
+			\item Coil noise pre-whitening
+			\item CG-SENSE reconstruction
+			\item 2D spatial filtering (extensible pipeline)
+			\item GPU acceleration via CUDA (cuFFT, cuBLAS, custom kernels)
+		\end{itemize}
+		\item \textbf{Experimentation and QA}
+		\begin{itemize}
+			\item Parameter sweeps for algorithms
+			\item PSNR/SSIM comparisons against references
+			\item Structured debug logs for reproducibility
+		\end{itemize}
+		\item \textbf{User interface}
+		\begin{itemize}
+			\item Simple Qt GUI
+			\item Interactive zoom and slice navigation (Arrow keys + Ctrl)
+			\item Context menu to export PNG or BMP
+		\end{itemize}
+	\end{itemize}
+	
+	\section*{Architecture}
+	\begin{enumerate}
+		\item \textbf{Back-end (Model) --- \texttt{mri\_engine.dll}}
+		\begin{itemize}
+			\item Reads .h5 (fastMRI / ISMRMRD)
+			\item Pre-processing: coil noise pre-whitening
+			\item Reconstruction: CG-SENSE
+			\item Post-processing: 2D spatial filters
+			\item Heavy compute on GPU (CUDA)
+		\end{itemize}
+		\item \textbf{Front-end (View)}
+		\begin{itemize}
+			\item Qt GUI for visualization
+			\item Displays reconstructed images
+			\item Tools: zoom, slice scrolling, export
+		\end{itemize}
+		\item \textbf{Controller}
+		\begin{itemize}
+			\item Orchestrates Model $\leftrightarrow$ View
+			\item HDF5 (.h5): calls \texttt{mri\_engine} $\rightarrow$ GPU processing $\rightarrow$ returns OpenCV \texttt{cv::Mat} $\rightarrow$ converted to \texttt{QImage} for display
+			\item DICOM: uses standard C++ DICOM libraries to parse and display
+			\item Coordinates image saving/export
+		\end{itemize}
+	\end{enumerate}
+	
+	\section*{Tech Stack}
+	\begin{itemize}
+		\item Language: C++
+		\item Framework: Qt 6 (GUI)
+		\item GPU: CUDA (cuFFT, cuBLAS, custom kernels)
+		\item Imaging: OpenCV
+		\item Formats: DICOM, fastMRI, ISMRMRD
+	\end{itemize}
+	
+	\section*{Agile / Kanban Plan}
+	\subsection*{Columns}
+	\begin{itemize}
+		\item Done
+		\item In Progress
+		\item Next Up (First Release)
+		\item Backlog (Second Release and later)
+		\item QA (PSNR/SSIM)
+	\end{itemize}
+	
+	\subsection*{Done}
+	\textbf{Iteration 1 (completed)}
+	\begin{itemize}
+		\item Model: \texttt{mri\_engine} with FFT-only reconstruction (baseline).
+		\item View: simple Qt GUI; context menu for saving PNG and DICOM.
+		\item Controller: orchestrates I/O (HDF5 fastMRI only; hardcoded image path).
+		\item Tested: Qt app displays one slice; writes PNG and DICOM to disk.
+	\end{itemize}
+	
+	\subsection*{In Progress}
+	\begin{itemize}
+		\item Integrate DICOM reading alongside fastMRI.
+		\item Add ISMRMRD reading path and Controller plumbing.
+		\item Slice visualization controls (scrubber/keyboard) for multi-slice series.
+		\item GPU acceleration harness for compute-intensive tasks (wire up cuFFT/cuBLAS and kernels).
+		\item QA harness: compute PSNR and SSIM vs reference images (e.g., RSS full-k).
+	\end{itemize}
+	
+	\subsection*{Next Up (First Release scope)}
+	\begin{itemize}
+		\item File support: DICOM, fastMRI, ISMRMRD.
+		\item Slice visualization of MRI images.
+		\item GPU acceleration of compute-intensive tasks.
+		\item Saving as DICOM, PNG, and BMP.
+		\item CG-SENSE reconstruction.
+		\item 2D spatial median filtering.
+		\item Pre-whitening using algorithm in \texttt{mri/prewhiten.hpp}
+		\begin{itemize}
+			\item Uses \texttt{mri/io.hpp} and \texttt{mri/common.hpp}
+			\item Cholesky-based whitener from k-space corner covariance
+			\item CPU: \texttt{apply\_whitener\_cpu}; CUDA: \texttt{apply\_whitener\_cuda}
+		\end{itemize}
+		\item QA: PSNR and SSIM for each pipeline configuration; include debug logs and parameter dumps.
+	\end{itemize}
+	
+	\subsection*{Backlog (Second Release and later)}
+	\begin{itemize}
+		\item CPU multithreaded implementations for parity with GPU paths.
+		\item CG-SENSE-TV (total variation regularization).
+		\item Improved pre-whitening algorithm (e.g., shrinkage-regularized covariance, eigenvalue clipping).
+		\item Better spatial filtering (e.g., bilateral/NLM or guided filter) to replace median baseline.
+		\item Extended QA dashboards: per-slice PSNR/SSIM tables and CSV export.
+		\item Robust file handling: non-hardcoded paths, drag-and-drop, batch processing.
+	\end{itemize}
+	
+	\subsection*{Working Agreements}
+	\begin{itemize}
+		\item WIP limit: 2 items per active column to maintain flow.
+		\item Every feature includes basic debug prints (start/end, sizes, parameters, timings).
+		\item QA gate: image-quality features must report PSNR and SSIM before moving to \textbf{Done}.
+	\end{itemize}
+	
+\end{document}
+
