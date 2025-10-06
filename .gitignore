@@ -43,3 +43,9 @@ glimpse/
 glimpse_dev_v3/
 glimpse_mri_work/
 h5_mri_dicom/
+# engine-specific ignores
+engine/**/obj/
+engine/**/.vs/
+engine/**/build/
+engine/**/*.user
+engine/**/*.obj
