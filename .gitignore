@@ -33,3 +33,13 @@ glimpse/
 glimpse_dev_v3/
 glimpse_mri_work/
 h5_mri_dicom/
+# ---- Legacy app/test trees to keep local-only ----
+DICOM_test/
+HDF5_DICOM_test/
+HDF5_test/
+VTK-DICOM/
+documentation/
+glimpse/
+glimpse_dev_v3/
+glimpse_mri_work/
+h5_mri_dicom/
