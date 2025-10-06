@@ -1,0 +1,31 @@
+﻿# ===== Global ignores (Qt/CMake/VS) =====
+**/build*/
+**/cmake-build-*/
+**/.qmake.stash
+**/*.pro.user
+**/*.user
+**/.vs/
+**/.vscode/
+
+# Compiled objects / MSVC
+**/*.obj
+**/*.pdb
+**/*.iobj
+**/*.ipdb
+**/*.ilk
+**/*.exp
+**/*.lib
+
+# Common distro / temp
+**/dist*/
+**/out*/
+**/Debug*/
+**/Release*/
+**/*.zip
+**/*.7z
+**/*.tar
+**/*.tar.gz
+
+# Python (if any tools)
+**/__pycache__/
+**/*.pyc
