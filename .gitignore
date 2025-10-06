@@ -1,58 +1,25 @@
-# Build & IDE
-build/
-**/build/
-*.obj
-*.pdb
-*.idb
-*.ilk
-*.exe
-*.dll
-*.lib
-*.exp
+﻿# Build and user-specific
+**/build*/
+**/cmake-build-*/
+**/Debug*/
+**/Release*/
+**/.vs/
+**/.vscode/
+**/.qmake.stash
+**/*.pro.user
+**/*.user
 
-# Qt/VS user files
-*.pro.user
-*.user
-.vscode/
-.vs/
-# --- Qt/C++ build & IDE artifacts ---
-build/
-**/build/
-*.obj
-*.pdb
-*.idb
-*.ilk
-*.exe
-*.dll
-*.lib
-*.exp
+# Compiled (MSVC)
+**/*.obj
+**/*.pdb
+**/*.lib
+**/*.exp
+**/*.ilk
+**/*.iobj
+**/*.ipdb
 
-# Qt/VS user state
-*.pro.user
-*.user
-.vscode/
-.vs/
-# Build & binaries
-build/
-**/build/
-*.obj
-*.pdb
-*.idb
-*.ilk
-*.exe
-*.dll
-*.lib
-*.exp
-
-# Qt/IDE state
-*.pro.user
-*.user
-.vs/
-.vscode/
-
-# Datasets/artifacts (keep these out of git)
-*.h5
-*.H5
-*.nii
-*.nii.gz
-*.dcm
+# Archives
+**/*.zip
+**/*.7z
+**/*.tar
+**/*.tar.gz
