@@ -1,0 +1,51 @@
+﻿# --- Generic ---
+*.log
+*.tmp
+*.bak
+.DS_Store
+
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+
+# --- Qt / QtCreator ---
+*.pro.user
+*.user
+*.qmake.stash
+*.qmlc
+*.jsc
+
+# --- CMake / build ---
+CMakeCache.txt
+CMakeFiles/
+cmake-build-*/
+build*/
+out/
+Makefile
+*.ninja
+*.ninja_deps
+*.ninja_log
+compile_commands.json
+
+# --- Visual Studio ---
+.vs/
+*.suo
+*.vcxproj.user
+*.opensdf
+*.sdf
+*.ipch
+*.aps
+*.pch
+*.obj
+*.ilk
+*.pdb
+*.idb
+Debug*/
+Release*/
+x64/
+ipch/
+
+# --- Packaging / artifacts ---
+dist/
+*.spec
