@@ -1,14 +1,58 @@
-﻿
-#pragma once
+﻿#pragma once
 #include <vector>
 #include <cmath>
+#include <limits>
+#include <algorithm>
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 #include <iostream>
 
 namespace imgutil {
 
-// Debuggy float->8U with min/max prints and flat-image guard.
+// --- NEW ---
+// Robust float* [H x W] -> 8-bit converter (NaN/Inf-safe) with debug prints.
+// Matches the behavior you had inside AppController.
+inline cv::Mat to_u8_slice(const float* src, int H, int W)
+{
+    if (!src || H <= 0 || W <= 0) {
+        std::cerr << "[DBG][imgutil] to_u8_slice: null ptr or bad size H=" << H << " W=" << W << "\n";
+        return {};
+    }
+
+    const size_t HW = static_cast<size_t>(H) * static_cast<size_t>(W);
+    double mn = +std::numeric_limits<double>::infinity();
+    double mx = -std::numeric_limits<double>::infinity();
+
+    for (size_t i = 0; i < HW; ++i) {
+        const double v = static_cast<double>(src[i]);
+        if (!std::isfinite(v)) continue;
+        if (v < mn) mn = v;
+        if (v > mx) mx = v;
+    }
+
+    if (!std::isfinite(mn) || !std::isfinite(mx) || mx <= mn) {
+        std::cerr << "[DBG][imgutil] to_u8_slice: invalid min/max (mn=" << mn << " mx=" << mx << "); returning zeros\n";
+        return cv::Mat::zeros(H, W, CV_8UC1);
+    }
+
+    std::cerr << "[DBG][imgutil] to_u8_slice: min=" << mn << " max=" << mx << "\n";
+
+    cv::Mat out(H, W, CV_8UC1);
+    const double scale = 255.0 / (mx - mn);
+    for (int y = 0; y < H; ++y) {
+        const float* srow = src + static_cast<size_t>(y) * W;
+        uint8_t* drow = out.ptr<uint8_t>(y);
+        for (int x = 0; x < W; ++x) {
+            double v = static_cast<double>(srow[x]);
+            if (!std::isfinite(v)) v = mn;
+            const int u = static_cast<int>((v - mn) * scale + 0.5);
+            drow[x] = static_cast<uint8_t>(std::clamp(u, 0, 255));
+        }
+    }
+    return out;
+}
+
+// Existing: vector<float> -> 8U with OpenCV normalize (kept as-is)
 inline cv::Mat to_8u(const std::vector<float>& data, int h, int w)
 {
     if (data.empty() || h <= 0 || w <= 0) {
@@ -58,4 +102,3 @@ inline cv::Mat make_test_gradient(int h, int w)
 }
 
 } // namespace imgutil
-
