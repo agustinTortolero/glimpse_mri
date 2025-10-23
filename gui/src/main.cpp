@@ -1,212 +1,299 @@
-﻿// src/main.cpp
+﻿// gui/src/main.cpp  — Splash with sharp scaling + HiDPI, Option B exact hold
 #include <QApplication>
+#include <QPixmap>
+#include <QSplashScreen>
+#include <QScreen>
+#include <QGuiApplication>
+#include <QCursor>
 #include <QFileInfo>
-#include <QDir>
 #include <QString>
-#include <QDateTime>
 #include <QLoggingCategory>
+#include <QEventLoop>
+#include <QTimer>
+#include <QFont>
+
+#include <algorithm>
 #include <iostream>
+#include <memory>
 #include <sstream>
 
+// ---- Your app headers (adjust if paths differ) ----
 #include "../view/mainwindow.hpp"
 #include "../controller/app_controller.hpp"
-#include "logger.hpp"
+#include "logger.hpp" // simplelog::Logger, write_banner, now_utc_iso8601
 
-// -------------------------------------------------------------
-// DEV fallback (optional): uncomment to force a local test file
-// -------------------------------------------------------------
-// #define GLIMPSE_USE_FALLBACK 0
-static const char* kFallbackPath =
-    "C:\\datasets\\MRI_raw\\FastMRI\\brain_multicoil\\file_brain_AXFLAIR_200_6002452.h5";
-// static const char* kFallbackPath =
-//     "C:\\datasets\\MRI_DICOM\\IMG-0001-00001_fromSimens.dcm";
-// static const char* kFallbackPath =
-//     "C:\\datasets\\MRI_raw\\from mridata_dot_org\\52c2fd53-d233-4444-8bfd-7c454240d314.h5";
+// ======================== Utilities & Qt log bridge =========================
+namespace {
+simplelog::Logger* g_logger = nullptr;
 
-// Small helper to duplicate a message to console + log
-static void log_and_print(simplelog::Logger& log, const std::string& line) {
+void log_and_print(simplelog::Logger& log, const std::string& line) {
     std::cerr << line << std::endl;
     log.append(line);
 }
 
-// Pick input path: argv[1] (if present). If none, return empty so the UI
-// starts idle and waits for drag-and-drop (or menu) instead of auto-loading.
-static QString pickInputPath(int argc, char** argv, simplelog::Logger& log) {
-#ifdef GLIMPSE_USE_FALLBACK
-    (void)argc; (void)argv;
-    QString fb = QString::fromUtf8(kFallbackPath);
-    log_and_print(log, std::string("[DBG][Main] [DEV] Forcing fallback path: ") + fb.toStdString());
-    return fb;
-#else
+void qt_to_logger_handler(QtMsgType type, const QMessageLogContext& ctx, const QString& msg) {
+    const QByteArray local = msg.toLocal8Bit();
+    switch (type) {
+    case QtDebugMsg:    std::cerr << "[QT][DBG] "  << local.constData() << "\n"; break;
+    case QtInfoMsg:     std::cerr << "[QT][INF] "  << local.constData() << "\n"; break;
+    case QtWarningMsg:  std::cerr << "[QT][WRN] "  << local.constData() << "\n"; break;
+    case QtCriticalMsg: std::cerr << "[QT][ERR] "  << local.constData() << "\n"; break;
+    case QtFatalMsg:    std::cerr << "[QT][FATAL] "<< local.constData() << "\n"; break;
+    }
+    if (!g_logger) return;
+
+    std::ostringstream line;
+    if (ctx.file && ctx.line > 0) {
+        line << "[QT][" << (ctx.function ? ctx.function : "?") << " @ "
+             << ctx.file << ":" << ctx.line << "] ";
+    } else {
+        line << "[QT] ";
+    }
+    switch (type) {
+    case QtDebugMsg:    line << "DBG "; break;
+    case QtInfoMsg:     line << "INF "; break;
+    case QtWarningMsg:  line << "WRN "; break;
+    case QtCriticalMsg: line << "ERR "; break;
+    case QtFatalMsg:    line << "FATAL "; break;
+    }
+    line << local.constData();
+    g_logger->append(line.str());
+    if (type == QtFatalMsg) std::abort();
+}
+
+simplelog::Logger createLogger() {
+    simplelog::Logger log("GlimpseMRI", "app.log"); // truncates on start
+    simplelog::write_banner(log, {
+                                     "Glimpse MRI — startup",
+                                     "Author: Agustin Tortolero",
+                                     std::string("Started at (UTC): ") + simplelog::now_utc_iso8601()
+                                 }, '=');
+    std::ostringstream where; where << "[DBG][Main] Log file: " << log.path().string();
+    std::cerr << where.str() << "\n"; log.append(where.str());
+    return log;
+}
+
+void installQtLogBridge(simplelog::Logger& log) {
+    g_logger = &log;
+    qInstallMessageHandler(qt_to_logger_handler);
+    log_and_print(log, "[DBG][Main] Qt→Logger bridge installed.");
+}
+
+// =============================== CLI input =================================
+QString pickInputPath(int argc, char** argv, simplelog::Logger& log) {
     if (argc > 1 && argv[1] && argv[1][0] != '\0') {
         QString cli = QString::fromLocal8Bit(argv[1]);
         log_and_print(log, std::string("[DBG][Main] Using CLI path: ") + cli.toStdString());
         return cli;
     }
-    log_and_print(log, "[DBG][Main] No CLI path. Will NOT auto-load. Waiting for drag-and-drop or menu.");
-    return QString(); // empty => no auto-load
-#endif
+    log_and_print(log, "[DBG][Main] No CLI path. Starting idle (drag-and-drop or File→Open).");
+    return {};
 }
 
-// === Qt → Logger bridge ===
-static simplelog::Logger* g_logger = nullptr;
+void logInputFileInfo(const QString& inPath, simplelog::Logger& log) {
+    const QFileInfo fi(inPath);
+    std::ostringstream ss;
+    ss << "[DBG][Main] Resolved path:"
+       << "\n  absolute = " << fi.absoluteFilePath().toStdString()
+       << "\n  exists   = " << (fi.exists() ? "yes" : "NO")
+       << "\n  suffix   = " << fi.suffix().toStdString();
+    log_and_print(log, ss.str());
+    if (!fi.exists())
+        log_and_print(log, "[WRN][Main] Input file does not exist; loaders will report errors.");
+}
 
-static void qt_to_logger_handler(QtMsgType type, const QMessageLogContext& ctx, const QString& msg)
+// =============================== Splash (sharp) =============================
+void splashMessage(QSplashScreen* splash, const QString& msg) {
+    if (!splash) return;
+    splash->showMessage(msg, Qt::AlignHCenter | Qt::AlignBottom, Qt::white);
+    QApplication::processEvents();
+}
+
+std::unique_ptr<QSplashScreen> createAndShowSplash(simplelog::Logger& log,
+                                                   const char* resourcePath = ":/assets/splash.png",
+                                                   double screenFrac = 0.50,
+                                                   int clampMaxW = 900,
+                                                   int clampMaxH = 600)
 {
-    // Console echo (keeps original Qt prefixes)
-    QByteArray local = msg.toLocal8Bit();
-    switch (type) {
-    case QtDebugMsg:    std::cerr << "[QT][DBG] "  << local.constData() << "\n"; break;
-    case QtInfoMsg:     std::cerr << "[QT][INFO] " << local.constData() << "\n"; break;
-    case QtWarningMsg:  std::cerr << "[QT][WRN] "  << local.constData() << "\n"; break;
-    case QtCriticalMsg: std::cerr << "[QT][ERR] "  << local.constData() << "\n"; break;
-    case QtFatalMsg:    std::cerr << "[QT][FATAL] "<< local.constData() << "\n"; break;
+    log_and_print(log, std::string("[DBG][Splash] Loading: ") + resourcePath);
+    QPixmap orig(resourcePath);
+    if (orig.isNull()) { log_and_print(log, "[WRN][Splash] NULL pixmap; skipping"); return {}; }
+
+    QScreen* scr = QGuiApplication::screenAt(QCursor::pos());
+    if (!scr) scr = QGuiApplication::primaryScreen();
+    const QRect avail = scr ? scr->availableGeometry() : QRect(0,0,1280,720);
+    const qreal dpr   = scr ? scr->devicePixelRatio() : 1.0;
+
+    // Logical target box (dp)
+    int maxW = int(avail.width()  * screenFrac);
+    int maxH = int(avail.height() * screenFrac);
+    if (clampMaxW > 0) maxW = std::min(maxW, clampMaxW);
+    if (clampMaxH > 0) maxH = std::min(maxH, clampMaxH);
+    const QSize logicalTarget(maxW, maxH);
+
+    const QSize deviceTarget(
+        int(std::lround(logicalTarget.width()  * dpr)),
+        int(std::lround(logicalTarget.height() * dpr))
+        );
+
+
+    // If no scaling needed, keep native; else scale smoothly at device resolution
+    QPixmap pix;
+    const bool fits = (orig.width() <= deviceTarget.width()) && (orig.height() <= deviceTarget.height());
+    if (fits) {
+        pix = orig;
+        pix.setDevicePixelRatio(dpr);
+        log_and_print(log, "[DBG][Splash] Using native size (no scale), DPR set.");
+    } else {
+        QImage img = orig.toImage(); // convert once
+        QImage scaled = img.scaled(deviceTarget, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        pix = QPixmap::fromImage(scaled);
+        pix.setDevicePixelRatio(dpr); // we rendered at device px
+        std::ostringstream ss;
+        ss << "[DBG][Splash] Smooth downscale to device " << scaled.width() << "x" << scaled.height()
+           << " (logical " << (scaled.width()/dpr) << "x" << (scaled.height()/dpr) << ") DPR=" << dpr;
+        log_and_print(log, ss.str());
     }
 
-    // File append
-    if (g_logger) {
-        std::ostringstream line;
-        // Optional: add file:line
-        if (ctx.file && ctx.line > 0) {
-            line << "[QT][" << (ctx.function ? ctx.function : "?") << " @ "
-                 << ctx.file << ":" << ctx.line << "] ";
-        } else {
-            line << "[QT] ";
-        }
-        switch (type) {
-        case QtDebugMsg:    line << "DBG "; break;
-        case QtInfoMsg:     line << "INF "; break;
-        case QtWarningMsg:  line << "WRN "; break;
-        case QtCriticalMsg: line << "ERR "; break;
-        case QtFatalMsg:    line << "FATAL "; break;
-        }
-        line << local.constData();
-        g_logger->append(line.str());
-        if (type == QtFatalMsg) abort();
+    auto splash = std::make_unique<QSplashScreen>(pix);
+    splash->setWindowFlag(Qt::WindowStaysOnTopHint, true);
+
+    // Center using logical size (respects DPR)
+    const QSizeF logicalSize = pix.deviceIndependentSize();
+    const QPoint center = avail.center() - QPoint(int(logicalSize.width()/2.0),
+                                                  int(logicalSize.height()/2.0));
+    splash->move(center);
+
+    // Optional: font tweak + message
+    QFont f = splash->font(); f.setPointSizeF(f.pointSizeF() + 1.5); splash->setFont(f);
+    splash->show(); splash->raise(); splash->activateWindow();
+    {
+        std::ostringstream ss;
+        ss << "[DBG][Splash] show at " << splash->x() << "," << splash->y()
+           << " logical=" << logicalSize.width() << "x" << logicalSize.height();
+        log_and_print(log, ss.str());
+    }
+    splash->showMessage("Initializing...", Qt::AlignHCenter | Qt::AlignBottom, Qt::white);
+    QApplication::processEvents();
+    return splash;
+}
+
+
+// =============================== Build UI ==================================
+struct Ui { std::unique_ptr<MainWindow> window; std::unique_ptr<AppController> controller; };
+
+Ui buildUi(simplelog::Logger& log, QSplashScreen* splash) {
+    splashMessage(splash, "Creating MainWindow...");
+    auto w = std::make_unique<MainWindow>();
+
+    splashMessage(splash, "Wiring controller...");
+    auto c = std::make_unique<AppController>(w.get());
+
+    w->setWindowTitle("Glimpse MRI — GUI startup with splash");
+    log_and_print(log, "[DBG][Main] Window title set.");
+    return { std::move(w), std::move(c) };
+}
+
+void maybeLoadInitialInput(const QString& inPath,
+                           AppController& controller,
+                           QSplashScreen* splash,
+                           simplelog::Logger& log) {
+    if (inPath.isEmpty()) {
+        log_and_print(log, "[DBG][Main] No auto-load. Waiting for user.");
+        return;
+    }
+    logInputFileInfo(inPath, log);
+    splashMessage(splash, "Loading input...");
+    log_and_print(log, "[DBG][Main] controller.load(...)");
+    controller.load(inPath);
+}
+
+void showUiAndFinishSplash(MainWindow& w, AppController& controller, QSplashScreen* splash, simplelog::Logger& log) {
+    splashMessage(splash, "Starting UI...");
+    controller.show();
+    w.show();
+    log_and_print(log, "[DBG][Main] MainWindow shown.");
+
+    if (splash) {
+        splash->finish(&w);
+        log_and_print(log, "[DBG][Splash] splash.finish(&w)");
     }
 }
 
-int main(int argc, char** argv)
-{
-    // === Initialize logger first; it truncates/cleans the file every run ===
-    simplelog::Logger log("GlimpseMRI", "app.log");
+int runEventLoop(QApplication& app, simplelog::Logger& log) {
+    log_and_print(log, "[DBG][Main] Entering app.exec()");
+    const int rc = app.exec();
+    std::ostringstream ss; ss << "[DBG][Main] app.exec() returned rc=" << rc; log_and_print(log, ss.str());
+    return rc;
+}
 
-    // Decorative banner (appears near top of the log)
-    simplelog::write_banner(log, {
-                                     "Glimpse MRI + MRI Engine V1.1",
-                                     "author: Agustin Tortolero",
-                                     "contact at: agustin.tortolero@proton.me"
-                                 }, '*');
+} // namespace
 
-    // Optional run info block
-    log.append("----- RUN INFO -----");
-#if defined(_DEBUG)
-    log.append("Build: Debug");
-#else
-    log.append("Build: Release");
-#endif
-#ifdef QT_VERSION_STR
-    {
-        std::ostringstream qtver;
-        qtver << "Qt: " << QT_VERSION_STR << " (runtime " << qVersion() << ")";
-        log.append(qtver.str());
-    }
-#endif
-    {
-        std::ostringstream when;
-        when << "Started at (UTC): " << simplelog::now_utc_iso8601();
-        log.append(when.str());
-    }
-    log.append("--------------------");
-
-    {
-        std::ostringstream where;
-        where << "[DBG][Main] Log file: " << log.path().string();
-        std::cerr << where.str() << "\n";
-        log.append(where.str());
-    }
-
-    // Install Qt→Logger bridge BEFORE any Qt logs happen
-    g_logger = &log;
-    qInstallMessageHandler(qt_to_logger_handler);
+// ================================== main ====================================
+int main(int argc, char** argv) {
+    auto log = createLogger();
+    installQtLogBridge(log);
 
     try {
         log_and_print(log, "[DBG] Qt app starting.");
-
-        // Some environment/argv context (useful in bug reports)
         {
             std::ostringstream ctx;
             ctx << "[DBG][Main] argc=" << argc;
-            for (int i = 0; i < argc; ++i)
-                ctx << " argv[" << i << "]=" << (argv[i] ? argv[i] : "(null)");
+            for (int i = 0; i < argc; ++i) ctx << " argv[" << i << "]=" << (argv[i] ? argv[i] : "(null)");
             log_and_print(log, ctx.str());
         }
+
+        // HiDPI pixmaps BEFORE QApplication to avoid blur when scaling
+        QGuiApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);  // <<< important
+
+        QApplication app(argc, argv);
+
 #ifdef QT_VERSION_STR
         {
             std::ostringstream qtver;
-            qtver << "[DBG][Main] Qt compile-time version: " << QT_VERSION_STR
+            qtver << "[DBG][Main] Qt compile-time: " << QT_VERSION_STR
                   << " | runtime: " << qVersion();
             log_and_print(log, qtver.str());
         }
 #endif
 
-        QApplication app(argc, argv);
+        // 1) Show crisp splash (on top)
+        auto splash = createAndShowSplash(log,
+                                          /*resourcePath*/":/assets/splash.png",
+                                          /*screenFrac*/ 0.50,   // <<< size fraction (e.g., 0.40, 0.33)
+                                          /*clampMaxW*/  900,    // <<< pixel caps; set <=0 to disable
+                                          /*clampMaxH*/  600);
 
-        MainWindow w;
-        AppController controller(&w);   // Qt logs are bridged; controller doesn't need Logger
-
-        // Choose input (CLI or none)
-        const QString inPath = pickInputPath(argc, argv, log);
-        const QFileInfo fi(inPath);
-
-        if (!inPath.isEmpty()) {
-            // Print resolved info (handy for path issues)
-            std::ostringstream ss;
-            ss << "[DBG][Main] Resolved path:"
-               << "\n  absolute = " << fi.absoluteFilePath().toStdString()
-               << "\n  exists   = " << (fi.exists() ? "yes" : "NO")
-               << "\n  suffix   = " << fi.suffix().toStdString();
-            log_and_print(log, ss.str());
-
-            if (!fi.exists()) {
-                log_and_print(log, "[WRN][Main] Input file does not exist. Continuing; loaders will report errors.");
-            }
-        } else {
-            log_and_print(log, "[DBG][Main] Starting with no input; user will drag-and-drop or use menu.");
-        }
-
-        // Initial title; controller will refine after probe()
-        w.setWindowTitle("Glimpse MRI — Multi-slice UI (Iteration 3)");
-        log_and_print(log, "[DBG][Main] Window title set.");
-
-        // Load only if we have a path (CLI or dev fallback)
-        if (!inPath.isEmpty()) {
-            log_and_print(log, "[DBG][Main] Calling controller.load(...)");
-            controller.load(inPath);
-        } else {
-            log_and_print(log, "[DBG][Main] Skipping auto-load; waiting for user action.");
-        }
-
-        log_and_print(log, "[DBG][Main] Calling controller.show() (deferred draw)");
-        controller.show();
-
-        w.show();
-        log_and_print(log, "[DBG][Main] Entering app.exec()");
-        int rc = app.exec();
+        // 2) EXACT HOLD before creating UI (splash cannot be covered)
+        const int exactMs = 5000; // <<<--- SET YOUR EXACT HOLD TIME HERE (ms). e.g., 2000 / 5000 / 10000
         {
-            std::ostringstream ss;
-            ss << "[DBG][Main] app.exec() returned rc=" << rc;
+            std::ostringstream ss; ss << "[DBG][Splash] Holding splash for exact " << exactMs << " ms.";
             log_and_print(log, ss.str());
         }
-        return rc;
+        {
+            QEventLoop loop;
+            QTimer::singleShot(exactMs, &loop, &QEventLoop::quit);
+            loop.exec(); // processes events, keeps splash responsive and on top
+        }
+
+        // 3) Build UI after the hold
+        Ui ui = buildUi(log, splash.get());
+
+        // 4) Optional CLI load
+        const QString inPath = pickInputPath(argc, argv, log);
+        maybeLoadInitialInput(inPath, *ui.controller, splash.get(), log);
+
+        // 5) Show UI and close splash
+        showUiAndFinishSplash(*ui.window, *ui.controller, splash.get(), log);
+        splash.reset();
+
+        // 6) Event loop
+        return runEventLoop(app, log);
 
     } catch (const std::exception& e) {
-        std::ostringstream ss;
-        ss << "[FATAL] Unhandled std::exception: " << e.what();
-        log_and_print(log, ss.str());
-        return 1;
+        std::ostringstream ss; ss << "[FATAL] Unhandled std::exception: " << e.what();
+        log_and_print(log, ss.str()); return 1;
     } catch (...) {
-        log_and_print(log, "[FATAL] Unknown exception.");
-        return 1;
+        log_and_print(log, "[FATAL] Unknown exception."); return 1;
     }
 }

@@ -16,7 +16,8 @@ SOURCES += \
     model/io.cpp \
     src/main.cpp \
     controller/app_controller.cpp \
-    view/mainwindow.cpp
+    view/mainwindow.cpp \
+    view/progress_splash.cpp
 
 HEADERS += \
     model/dicom_dll.hpp \
@@ -24,7 +25,11 @@ HEADERS += \
     controller/app_controller.hpp \
     src/logger.hpp \
     view/mainwindow.hpp \
-    src/image_utils.hpp
+    src/image_utils.hpp \
+    view/progress_splash.hpp
+
+RESOURCES += gui/assets/assets.qrc \
+    assets/assets.qrc
 
 
 # make headers in model/ visible to all sources
@@ -155,3 +160,6 @@ QMAKE_POST_LINK += $$quote(cmd /c xcopy /Y /I /Q "$$CUDA_PATH\\bin\\cublasLt64*.
 
 QMAKE_POST_LINK += $$quote(cmd /c echo [DBG] DLLs now in "$$DEST_DLL_DIR":)
 QMAKE_POST_LINK += $$quote(cmd /c dir /b "$$DEST_DLL_DIR\\*.dll")
+
+DISTFILES += \
+    assets/images/splash/glimpse_splash_three_sines_v1.png

@@ -1,102 +1,104 @@
 ﻿#pragma once
 
-#include <QString>
-#include <QStringList>
 #include <memory>
 #include <vector>
+
+#include <QString>
+#include <QStringList>
+#include <QVector>
+#include <QByteArray>
+
 #include <opencv2/core.hpp>
+#include <QPointer>
 
-// Forward-declare to avoid heavy include; only pointers/refs here.
+// Forward declarations
 class MainWindow;
+struct DicomDll;           // FIX: match your dicom_dll.hpp (struct not class)
+class ProgressSplash;
 
-// io::ProbeResult is used by value, so we include it.
+// Probe result type
 #include "../model/io.hpp"   // io::ProbeResult
 
 class AppController {
 public:
-    ~AppController();
     explicit AppController(MainWindow* view);
+    ~AppController();
 
     // Entry points
     void load(const QString& pathQ);
-    void show();
-
-    // Save actions (invoked from MainWindow context menu)
+    void show();                   // lightweight: delegates to doShowNow()
     void savePNG(const QString& outPath);
     void saveDICOM(const QString& outPath);
 
+    // NEW: save a single .dcm with many frames (multiframe SC grayscale 8-bit)
+    void saveDICOMMultiframe(const QString& outPath, int rows, int cols,
+                             const QVector<QByteArray>& frames);
 
+    // View callbacks
+    void onSliceChanged(int idx);
+    void onStartOverRequested();
+    void applyNegative();
+    void toggleNegative();
 
-    // RAII helper for scoped busy indication
-    // controller/app_controller.hpp  (REPLACE your BusyScope with this)
+    // External C-ABI engine progress → UI
+    void postSplashUpdateFromEngineThread(int pct, const QString& stage);
+
+private:
     struct BusyScope {
         explicit BusyScope(MainWindow* v, const QString& message);
         ~BusyScope();
-    private:
         MainWindow* v_ = nullptr;
     };
 
-
-private:
-    // -------- optional dynamic loader for legacy GPU path --------
-    struct MriEngineDll;                 // defined in .cpp (optional)
-    std::unique_ptr<MriEngineDll> m_dll; // not used if you go direct-API
-
-    // ---- pipeline pieces (decl only; impl in .cpp) ----
+    // Pipeline pieces
     void clearLoadState();
-    void load_probe(const std::string& path);
     bool load_dicom(const std::string& path);
-    bool load_hdf5(const std::string& path);
-
-    bool try_gpu_recon();                // legacy dynamic-load path (optional)
-    bool use_embedded_preview();
+    bool reconstructAllSlicesFromDll(const QString& pathQ, bool fftshift);
     void prepare_fallback();
 
-    // Display helpers
+    // Show helpers
     void doShowNow();
     void show_metadata_and_image(const QStringList& meta, const cv::Mat& u8);
     void show_gradient_with_meta(const QStringList& meta);
-
-    // Multi-slice UI helpers
-    void showSlices(const std::vector<cv::Mat>& slices);
+    void showSlices(const std::vector<cv::Mat>& frames);
     void showSlice(int idx);
-    void onSliceChanged(int idx);        // connected from MainWindow
+    void adoptReconStackF32(const std::vector<float>& stack, int S, int H, int W);
 
-    // Data conversions
+    // Local converters/utilities
     static cv::Mat to_u8(const cv::Mat& f32);
     static cv::Mat vecf32_to_u8(const std::vector<float>& v, int H, int W);
     static cv::Mat make_gradient(int H, int W);
+    bool m_negativeMode = false;
 
-    // Adopt an S×H×W float stack into the GUI (builds 8-bit slices & slider)
-    void adoptReconStackF32(const std::vector<float>& stack, int S, int H, int W);
+    // Base (non-negative) pixels used to restore when toggling OFF
+    std::vector<cv::Mat> m_slices8_base;
+    cv::Mat              m_display8_base;
 
-    // DLL entry used by GUI path (kept private)
-    bool reconstructAllSlicesFromDll(const QString& pathQ, bool fftshift);
-    void onStartOverRequested();
+    // Helpers
+    static cv::Mat invert8u(const cv::Mat& src);
+    void captureNegativeBaseIfNeeded();
+    void closeSplashIfAny();
+
 private:
-    // View
-    MainWindow*   m_view = nullptr;
+    // MVC
+    MainWindow* m_view = nullptr;
 
-    // Busy nesting counter (debuggable)
-    int           m_busyNesting = 0;
-
-    // Metadata shown in the dock
-    QStringList   m_meta;
-
-    // What we learned during probing/loading
+    // Probe + metadata
     io::ProbeResult m_probe;
+    QStringList     m_meta;
 
-    // K-space + optional embedded preview from loader
-    std::vector<float> m_pre;
-    int                m_preH = 0;
-    int                m_preW = 0;
+    // DICOM DLL wrapper (no global)
+    std::unique_ptr<DicomDll> m_dicom;
 
-    // Last images to display/save
-    cv::Mat              m_display8;     // single image path
-    cv::Mat              m_lastImg8;     // last shown (for Save...)
-    std::vector<cv::Mat> m_slices8;      // multi-slice path
+    // Display state
+    cv::Mat              m_display8;      // single image
+    cv::Mat              m_lastImg8;      // last shown (for save)
+    std::vector<cv::Mat> m_slices8;       // multi-slice stack
     int                  m_currentSlice = 0;
 
-    // Remember the source path (for UI)
+    // Source path (for UI messages)
     QString              m_sourcePathQ;
+
+    // Splash (frameless progress window)
+    QPointer<ProgressSplash> m_splash;
 };

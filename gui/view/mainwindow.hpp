@@ -1,6 +1,7 @@
 ﻿#pragma once
 #include <QMainWindow>
 #include <QStringList>
+#include <QVector>
 #include <opencv2/core.hpp>
 
 // Forward decls (keep header light)
@@ -15,77 +16,174 @@ class QDropEvent;
 class QContextMenuEvent;   // for contextMenuEvent override
 class QResizeEvent;        // for resizeEvent override
 class QUrl;
+class QVBoxLayout;
+class QMenu;
+class QAction;
 
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
 public:
-    explicit MainWindow(QWidget* parent=nullptr);
+    explicit MainWindow(QWidget* parent = nullptr);
+    ~MainWindow() override;   // added to match .cpp and fix C2600
 
+    // View API used by the controller
     void setMetadata(const QStringList& lines);
     void appendMetadataLine(const QString& line);
     void beginNewImageCycle();
     void setImage(const cv::Mat& img8u);
-    void enableSliceSlider(int nSlices);
+    void beginBusy(const QString& message);
+    void endBusy();
+
+    // Slice slider API (overloads keep AppController happy)
+    void enableSliceSlider(int nSlices);                        // 0 or 1 -> disabled; >=2 -> enabled
+    void enableSliceSlider(bool enabled) { enableSliceSlider(enabled ? 2 : 0); }
+    void enableSliceSlider(bool enabled, int maxIndex) { enableSliceSlider(enabled ? (maxIndex + 1) : 0); }
+    void enableSliceSlider(bool enabled, int maxIndex, int currentIdx) {
+        enableSliceSlider(enabled ? (maxIndex + 1) : 0);
+        if (enabled) setSliceIndex(currentIdx);
+    }
     void setSliceIndex(int idx);
+        enum class HistScale { Linear, Log10, Sqrt, Asinh };
+    void setImageCV8U(const cv::Mat& m);   // expects CV_8UC1; shows slice + updates histogram
 
 
 signals:
-    void requestSavePNG(const QString& outPath);
-    void requestSaveDICOM(const QString& outPath);
-    void sliceChanged(int idx);
-    void fileDropped(const QString& path);   // DnD
+    // Existing single-slice save signals
+    void requestSavePNG(const QString& path);
+    void requestSaveDICOM(const QString& path);
+
+    // Optional: multi-frame Secondary Capture (one file)
+    void requestSaveDICOMSeriesOneFile(const QString& path, int rows, int cols,
+                                       const QVector<QByteArray>& frames);
+
+    // MR series (N files; one file per slice)
+    // basePath like ".../series.dcm" -> controller writes series_0001.dcm, etc.
+    void requestSaveDICOMSeriesMR(const QString& basePath,
+                                  double px, double py,
+                                  double sliceThickness,
+                                  double spacingBetween,
+                                  const QVector<double>& iop6,
+                                  const QVector<double>& ipp0);
+
+    // Controller listens to these:
+    void requestApplyNegative();      // controller toggles then calls onNegativeModeChanged(bool)
+    void sliceChanged(int index);
+    void fileDropped(const QString& path);
     void startOverRequested();
+
+public slots:
+    void onNegativeModeChanged(bool on);
+
+private slots:
+    void onSliderValueChanged(int v);  // wheel/slider -> emit sliceChanged
 
 protected:
     bool eventFilter(QObject* obj, QEvent* ev) override;
+    void contextMenuEvent(QContextMenuEvent* ev) override;
+    void resizeEvent(QResizeEvent* ev) override;
 
-    // Drag & drop handlers
+    // Drag & drop
     void dragEnterEvent(QDragEnterEvent* ev) override;
     void dragMoveEvent(QDragMoveEvent* ev) override;
     void dropEvent(QDropEvent* ev) override;
 
-    // Declare these overrides (implemented in .cpp)
-    void contextMenuEvent(QContextMenuEvent* ev) override;
-    void resizeEvent(QResizeEvent* ev) override;
-
-public slots:
-    // Busy UI used by controller’s current BusyScope
-    void beginBusy(const QString& message);
-    void endBusy();
-
 private:
-    void refreshPixmap();
-    void drawSliceOverlay(cv::Mat& img8);
+    // --- Constructor decomposition ---
+    void buildUi();
+    QWidget* createCentralArea();   // image label + slider row
+    void createMetadataDock();      // right dock, hidden by default (Image details)
+    void createHistogramDock();     // NEW: grayscale histogram dock (floatable)
+    void setInitialSize();          // initial window geometry
 
-    // Helpers
+    // --- Paint path (refactored) ---
+    void refreshPixmap();
+
+    // Helpers used by refreshPixmap
+    bool beginRefreshGuard();          // sets m_refreshing and logs if already refreshing
+    void endRefreshGuard();            // clears m_refreshing
+    bool hasDrawableImage() const;     // image+label present
+    bool labelTooSmall() const;        // label area too small for a render
+    bool isMultiSliceActive() const;   // slider enabled and >=2 slices
+    cv::Mat buildDisplayImageWithOverlay(); // m_img8 or copy with overlay
+    QImage  toQImageOwned(const cv::Mat& m) const;
+    QImage  scaleForLabel(const QImage& qi) const;
+    void    setPixmapAndLog(const QImage& scaled);
+
+    void drawSliceOverlay(cv::Mat& img8);   // draws "Slice i/N" on image when multi-slice
+
+    // --- setImage refactor helpers ---
+    bool   validateImageInput(const cv::Mat& img) const;
+    cv::Mat to8uMono(const cv::Mat& src) const;
+    void   logMatStats(const cv::Mat& m) const;
+    void   storeImage(const cv::Mat& m);
+    void   updateMetadataForImage(const cv::Mat& m);
+    void   repaintOnce();
+
+    // --- Histogram helpers (NEW) ---
+    void updateHistogramDock(const cv::Mat& u8);   // recompute & draw 256-bin histogram
+
+    // --- DnD helpers ---
     bool isAcceptableUrl(const QUrl& url) const;
     bool isAcceptablePath(const QString& path) const;
     void showDragHint();
     void clearDragHint();
 
-    // Context-menu helpers (implemented in .cpp)
-    void onSavePNG();
-    void onSaveDICOM();
-    bool m_refreshing = false;   // guard refreshPixmap re-entrancy
+    // --- Save actions ---
+    void onSavePNG();     // unified: user picks PNG or DICOM (single slice)
+    void onSaveDICOM();   // kept for completeness (not used by menu)
+    void onSaveBatch();   // batch: PNG -> many files; DICOM -> MR series (many files)
 
-private:
-    QLabel*         m_label = nullptr;
-    QDockWidget*    m_metaDock = nullptr;
-    QPlainTextEdit* m_metaText = nullptr;
-    QSlider*        m_sliceSlider = nullptr;
+    // --- Context menu decomposition ---
+    struct CtxMenuActions {
+        QAction* saveSlice = nullptr;
+        QAction* saveBatch = nullptr;
+        QAction* negative  = nullptr;
+        QAction* startOver = nullptr;
+        QAction* about     = nullptr;
+        // Note: "Image details…" is created on the fly and handled by text/objectName.
+    };
+    bool   hasImageForMenu() const;
+    bool   hasMultiSlicesForMenu() const;
+    QMenu* buildContextMenu(bool hasImg, CtxMenuActions& out);          // caller owns
+    void   populateMenuForNoImage(QMenu& menu, CtxMenuActions& out);
+    void   populateMenuForImage(QMenu& menu, CtxMenuActions& out,
+                              bool hasMulti, bool hasImg);
+    void   applyContextSelection(QAction* chosen, const CtxMenuActions& acts);
+
+    // --- Widgets/state ---
+    QLabel*         m_label        = nullptr;
+    QSlider*        m_sliceSlider  = nullptr;
+
+    // Metadata dock (embedded but floatable)
+    QDockWidget*    m_metaDock     = nullptr;
+    QPlainTextEdit* m_metaText     = nullptr;
+
+    // Histogram dock (embedded but floatable)  // NEW
+    QDockWidget*    m_histDock     = nullptr;
+    QLabel*         m_histLabel    = nullptr;
 
     cv::Mat         m_img8;
-    bool            m_hasImage = false;
+    bool            m_hasImage     = false;
 
-    // Busy nesting counter for beginBusy/endBusy
-    int             m_busyNesting = 0;
+    int             m_busyNesting  = 0;
+    bool            m_refreshing   = false;
+    bool            m_negativeMode = false;
 
-    // Accepted extensions (lowercase, no dot)
     const QStringList m_okExts{
         QStringLiteral("dcm"),
         QStringLiteral("ima"),
         QStringLiteral("h5"),
         QStringLiteral("hdf5")
     };
+
+    // About dialog
+    void showAboutDialog();
+    void addAboutDescription(QVBoxLayout* layout);
+
+
+    HistScale m_histScale = HistScale::Linear;
+    bool      m_histIgnoreBackground = false;
+
+
 };
