@@ -1,7 +1,6 @@
-# build artifacts
+# Build/IDE artifacts
 *.obj
 *.o
-*.pch
 *.pdb
 *.idb
 *.ipdb
@@ -15,6 +14,10 @@
 *.user
 *.vcxproj.user
 *.cache
+*.exp
+*.lib
+*.dll
+*.exe
 build/
 bin/
 out/
