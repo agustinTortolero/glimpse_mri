@@ -39,3 +39,6 @@ engine/**/build/
 engine/**/*.user
 engine/**/*.obj
 dev_iterations/
+Glimpse_MRI_alphaTest/
+dicom__io_lib/
+glimpse_dev_*/
