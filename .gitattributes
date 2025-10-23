@@ -1,0 +1,7 @@
+# Normalize line endings just for the engine subtree (LF in repo)
+engine/**/*.cpp text eol=lf
+engine/**/*.hpp text eol=lf
+engine/**/*.h   text eol=lf
+engine/**/*.cu  text eol=lf
+# Keep user/IDE files untracked as text normalization is not desired
+*.pro.user -text
