@@ -1,0 +1,51 @@
+﻿# Build and user-specific
+**/build*/
+**/cmake-build-*/
+**/Debug*/
+**/Release*/
+**/.vs/
+**/.vscode/
+**/.qmake.stash
+**/*.pro.user
+**/*.user
+
+# Compiled (MSVC)
+**/*.obj
+**/*.pdb
+**/*.lib
+**/*.exp
+**/*.ilk
+**/*.iobj
+**/*.ipdb
+
+# Archives
+**/*.zip
+**/*.7z
+**/*.tar
+**/*.tar.gz
+# ---- Legacy app/test trees to keep local-only ----
+DICOM_test/
+HDF5_DICOM_test/
+HDF5_test/
+VTK-DICOM/
+documentation/
+glimpse/
+glimpse_dev_v3/
+glimpse_mri_work/
+h5_mri_dicom/
+# ---- Legacy app/test trees to keep local-only ----
+DICOM_test/
+HDF5_DICOM_test/
+HDF5_test/
+VTK-DICOM/
+documentation/
+glimpse/
+glimpse_dev_v3/
+glimpse_mri_work/
+h5_mri_dicom/
+# engine-specific ignores
+engine/**/obj/
+engine/**/.vs/
+engine/**/build/
+engine/**/*.user
+engine/**/*.obj
