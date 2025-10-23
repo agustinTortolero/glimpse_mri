@@ -1,0 +1,22 @@
+# build artifacts
+*.obj
+*.o
+*.pch
+*.pdb
+*.idb
+*.ipdb
+*.iobj
+*.ilk
+*.tlog
+*.log
+*.sdf
+*.opensdf
+*.VC.db
+*.user
+*.vcxproj.user
+*.cache
+build/
+bin/
+out/
+CMakeFiles/
+CMakeCache.txt
