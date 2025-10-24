@@ -7,6 +7,8 @@
 #include <QStringList>
 #include <QVector>
 #include <QByteArray>
+#include <QSize>
+#include <QImage>
 
 #include <opencv2/core.hpp>
 #include <QPointer>
@@ -43,6 +45,9 @@ public:
     // External C-ABI engine progress → UI
     void postSplashUpdateFromEngineThread(int pct, const QString& stage);
 
+    // View → Controller (MVC): histogram requests
+    void onHistogramUpdateRequested(const QSize& canvas);
+
 private:
     struct BusyScope {
         explicit BusyScope(MainWindow* v, const QString& message);
@@ -63,6 +68,9 @@ private:
     void showSlices(const std::vector<cv::Mat>& frames);
     void showSlice(int idx);
     void adoptReconStackF32(const std::vector<float>& stack, int S, int H, int W);
+
+    // Histogram renderer (Controller "operation")
+    QImage renderHistogram(const cv::Mat& u8, const QSize& canvas, bool negativeMode, QString* tooltip);
 
     // Local converters/utilities
     static cv::Mat to_u8(const cv::Mat& f32);

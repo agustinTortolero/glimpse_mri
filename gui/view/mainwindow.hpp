@@ -2,6 +2,8 @@
 #include <QMainWindow>
 #include <QStringList>
 #include <QVector>
+#include <QSize>
+#include <QImage>
 #include <opencv2/core.hpp>
 
 // Forward decls (keep header light)
@@ -25,7 +27,7 @@ class MainWindow : public QMainWindow
     Q_OBJECT
 public:
     explicit MainWindow(QWidget* parent = nullptr);
-    ~MainWindow() override;   // added to match .cpp and fix C2600
+    ~MainWindow() override;
 
     // View API used by the controller
     void setMetadata(const QStringList& lines);
@@ -44,9 +46,7 @@ public:
         if (enabled) setSliceIndex(currentIdx);
     }
     void setSliceIndex(int idx);
-        enum class HistScale { Linear, Log10, Sqrt, Asinh };
-    void setImageCV8U(const cv::Mat& m);   // expects CV_8UC1; shows slice + updates histogram
-
+    void setImageCV8U(const cv::Mat& m);   // expects CV_8UC1; shows slice + requests histogram update
 
 signals:
     // Existing single-slice save signals
@@ -72,11 +72,19 @@ signals:
     void fileDropped(const QString& path);
     void startOverRequested();
 
+    // Histogram (MVC): the view requests, the controller computes & calls back
+    void requestHistogramUpdate(const QSize& canvasSize);
+
 public slots:
     void onNegativeModeChanged(bool on);
 
+    // Controller → View: set the rendered histogram image + tooltip
+    void setHistogramImage(const QImage& img, const QString& tooltip);
+
 private slots:
     void onSliderValueChanged(int v);  // wheel/slider -> emit sliceChanged
+    void onSavePNG();                  // unified: user picks PNG or DICOM (single slice)
+    void onSaveBatch();                // batch: PNG -> many files; DICOM -> MR series (many files)
 
 protected:
     bool eventFilter(QObject* obj, QEvent* ev) override;
@@ -93,8 +101,9 @@ private:
     void buildUi();
     QWidget* createCentralArea();   // image label + slider row
     void createMetadataDock();      // right dock, hidden by default (Image details)
-    void createHistogramDock();     // NEW: grayscale histogram dock (floatable)
+    void createHistogramDock();     // grayscale histogram dock (floatable; view-only)
     void setInitialSize();          // initial window geometry
+    void initRightDocksIfNeeded();  // one-time split/resize when first image arrives
 
     // --- Paint path (refactored) ---
     void refreshPixmap();
@@ -120,19 +129,11 @@ private:
     void   updateMetadataForImage(const cv::Mat& m);
     void   repaintOnce();
 
-    // --- Histogram helpers (NEW) ---
-    void updateHistogramDock(const cv::Mat& u8);   // recompute & draw 256-bin histogram
-
     // --- DnD helpers ---
     bool isAcceptableUrl(const QUrl& url) const;
     bool isAcceptablePath(const QString& path) const;
     void showDragHint();
     void clearDragHint();
-
-    // --- Save actions ---
-    void onSavePNG();     // unified: user picks PNG or DICOM (single slice)
-    void onSaveDICOM();   // kept for completeness (not used by menu)
-    void onSaveBatch();   // batch: PNG -> many files; DICOM -> MR series (many files)
 
     // --- Context menu decomposition ---
     struct CtxMenuActions {
@@ -141,7 +142,7 @@ private:
         QAction* negative  = nullptr;
         QAction* startOver = nullptr;
         QAction* about     = nullptr;
-        // Note: "Image details…" is created on the fly and handled by text/objectName.
+        // "Histogram" and "Image Info" are created on the fly via objectName
     };
     bool   hasImageForMenu() const;
     bool   hasMultiSlicesForMenu() const;
@@ -151,6 +152,23 @@ private:
                               bool hasMulti, bool hasImg);
     void   applyContextSelection(QAction* chosen, const CtxMenuActions& acts);
 
+    // --- Save helpers (refactor target) ---
+    enum class SaveFmt { PNG, DICOM, DICOM_SERIES };
+
+    // Single-file (slice) save helpers
+    bool promptSingleSave(QString* outPath, SaveFmt* outFmt);       // dialog
+    void emitSingleSave(const QString& path, SaveFmt fmt);          // emit proper signal
+
+    // Batch save helpers
+    bool canBatchSave() const;
+    bool promptBatchDestination(QString* outBasePath, SaveFmt* outFmt);
+    int  computeIndexPadding(int slices) const;
+    void saveBatchPNGSlices(const QString& basePath, int S, int pad);
+    bool promptDicomSeriesGeometry(double* px, double* py, double* sth, double* sbs,
+                                   QVector<double>* iop6, QVector<double>* ipp0);
+    void emitDicomSeries(const QString& basePath, double px, double py, double sth, double sbs,
+                         const QVector<double>& iop6, const QVector<double>& ipp0);
+
     // --- Widgets/state ---
     QLabel*         m_label        = nullptr;
     QSlider*        m_sliceSlider  = nullptr;
@@ -159,7 +177,7 @@ private:
     QDockWidget*    m_metaDock     = nullptr;
     QPlainTextEdit* m_metaText     = nullptr;
 
-    // Histogram dock (embedded but floatable)  // NEW
+    // Histogram dock (embedded but floatable)
     QDockWidget*    m_histDock     = nullptr;
     QLabel*         m_histLabel    = nullptr;
 
@@ -180,10 +198,4 @@ private:
     // About dialog
     void showAboutDialog();
     void addAboutDescription(QVBoxLayout* layout);
-
-
-    HistScale m_histScale = HistScale::Linear;
-    bool      m_histIgnoreBackground = false;
-
-
 };

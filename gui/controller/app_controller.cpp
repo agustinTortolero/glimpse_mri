@@ -18,8 +18,6 @@
 #include <QFileInfo>
 #include <QEventLoop>
 
-
-
 #include "../view/mainwindow.hpp"
 #include "../model/io.hpp"
 #include "../model/dicom_dll.hpp"
@@ -41,10 +39,6 @@ static void engine_progress_tramp(int pct, const char* stage, void* user)
     const QString stageQ = QString::fromUtf8(stage ? stage : "");
     self->postSplashUpdateFromEngineThread(pct, stageQ);
 }
-
-
-
-
 
 AppController::AppController(MainWindow* view)
     : m_view(view)
@@ -77,13 +71,18 @@ AppController::AppController(MainWindow* view)
                          this->load(p);
                      });
 
-
-
     // Start over (reset to idle hint)
     QObject::connect(m_view, &MainWindow::startOverRequested, m_view, [this](){
         qDebug() << "[CTRL] startOverRequested: clearing controller state + showing drag hint";
         this->onStartOverRequested();
     });
+
+    // MVC: View requests histogram redraw; Controller computes and calls back
+    QObject::connect(m_view, &MainWindow::requestHistogramUpdate, m_view,
+                     [this](const QSize& s){
+                         qDebug() << "[CTRL][Hist] requestHistogramUpdate -> onHistogramUpdateRequested size=" << s;
+                         this->onHistogramUpdateRequested(s);
+                     });
 
     // Keyboard shortcuts for slice navigation
     auto step = [this](int d){
@@ -105,12 +104,10 @@ AppController::AppController(MainWindow* view)
         QObject::connect(sc, &QShortcut::activated, m_view, [=]{ jump(t); });
     };
 
-
     QObject::connect(m_view, &MainWindow::requestApplyNegative, m_view, [this](){
         qDebug() << "[CTRL][FX] requestApplyNegative -> toggleNegative()";
         this->toggleNegative();
     });
-
 
     bindStep(QKeySequence(Qt::Key_Up), -1);
     bindStep(QKeySequence(Qt::Key_Left), -1);
@@ -201,7 +198,6 @@ void AppController::load(const QString& pathQ)
     }
 
     m_sourcePathQ = pathQ;
-    const std::string path = pathQ.toStdString();
     bool anyWorkToShow = false;
 
     {   // Busy while probing/reading/reconstructing
@@ -215,14 +211,14 @@ void AppController::load(const QString& pathQ)
         // Probe
         std::string dbg;
         QElapsedTimer tProbe; tProbe.start();
-        m_probe = io::probe(path, &dbg);
+        m_probe = io::probe(pathQ.toStdString(), &dbg);
         qDebug().noquote() << "[DBG][probe]\n" << QString::fromStdString(dbg);
         qDebug() << "[CTRL][LOAD] probe took" << tProbe.elapsed() << "ms";
 
         if (m_probe.flavor == io::Flavor::DICOM) {
             qDebug() << "[CTRL][LOAD] DICOM path -> load_dicom";
             QElapsedTimer t; t.start();
-            const bool ok = load_dicom(path);
+            const bool ok = load_dicom(pathQ.toStdString());
             qDebug() << "[CTRL][LOAD] load_dicom ok=" << ok << " ms=" << t.elapsed();
             if (!ok) {
                 qWarning() << "[CTRL][LOAD] DICOM not admitted -> prepare_fallback";
@@ -736,6 +732,130 @@ AppController::BusyScope::~BusyScope()
     qDebug() << "[BusyScope] end";
 }
 
+// =====================================================================
+// Histogram operations (Controller)
+// =====================================================================
+
+QImage AppController::renderHistogram(const cv::Mat& srcRef,
+                                      const QSize& canvasSize,
+                                      bool negativeMode,
+                                      QString* tooltip)
+{
+    // Canvas size (defensive)
+    const int W = std::max(100, canvasSize.width());
+    const int H = std::max(80,  canvasSize.height());
+    const cv::Scalar bg   = negativeMode ? cv::Scalar(0,   0,   0)   : cv::Scalar(255, 255, 255);
+    const cv::Scalar bar  =                           /* BLUE */      cv::Scalar(255, 0,   0);
+    const cv::Scalar axis = negativeMode ? cv::Scalar(90,  90,  90)  : cv::Scalar(180, 180, 180);
+
+    cv::Mat canvas(H, W, CV_8UC3, bg);
+
+    auto drawBaseline = [&](){
+        cv::line(canvas, cv::Point(0, H - 1), cv::Point(W - 1, H - 1), axis, 1, cv::LINE_8);
+    };
+
+    // If we truly have no image: prepare a clean placeholder with baseline + text
+    if (srcRef.empty()) {
+        drawBaseline();
+        // Draw "No image" centered
+        const std::string text = "No image";
+        int baseline = 0;
+        cv::Size ts = cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX, 0.6, 1, &baseline);
+        cv::Point org((W - ts.width)/2, (H + ts.height)/2);
+        cv::putText(canvas, text, org, cv::FONT_HERSHEY_SIMPLEX, 0.6,
+                    negativeMode ? cv::Scalar(200,200,200) : cv::Scalar(50,50,50), 1, cv::LINE_AA);
+
+        if (tooltip) *tooltip = QString("Histogram: no image");
+        QImage qi(canvas.data, canvas.cols, canvas.rows, int(canvas.step), QImage::Format_BGR888);
+        return qi.copy();
+    }
+
+    // Ensure 8-bit mono input
+    cv::Mat src8;
+    if (srcRef.type() == CV_8UC1) src8 = srcRef;
+    else                          srcRef.convertTo(src8, CV_8U);
+
+    // Raw histogram (256 bins)
+    constexpr int histSize = 256;
+    float range[2] = {0.f, 256.f};
+    const float* ranges[] = { range };
+    int channels[] = { 0 };
+    cv::Mat hist;
+    cv::calcHist(&src8, 1, channels, cv::Mat(), hist, 1, &histSize, ranges, /*uniform*/true, /*accum*/false);
+
+    // ALWAYS ignore background band:
+    // normal -> bins 0..4; negative -> bins 251..255
+    {
+        const int start = negativeMode ? std::max(0, hist.rows - 5) : 0;
+        const int end   = negativeMode ? hist.rows - 1              : std::min(hist.rows - 1, 4);
+        double suppressed = 0.0;
+        for (int i = start; i <= end; ++i) { suppressed += hist.at<float>(i); hist.at<float>(i) = 0.f; }
+        qDebug() << "[CTRL][Hist] background bins ignored:" << start << "..." << end << " suppressed=" << suppressed;
+    }
+
+    // Range
+    double minv = 0.0, maxv = 0.0;
+    cv::minMaxLoc(hist, &minv, &maxv);
+
+    // Layout & draw
+    const int topMargin   = 12;
+    const int leftMargin  = 6;
+    const int rightMargin = 6;
+    const int usableW     = std::max(1, W - leftMargin - rightMargin);
+    const int baseY       = H - 1;
+
+    drawBaseline();
+
+    const double hScale = (maxv > 0.0) ? (double(H - topMargin - 1) / maxv) : 0.0;
+    const double binWf  = double(usableW) / double(histSize);
+
+    for (int i = 0; i < histSize; ++i) {
+        const int x0 = leftMargin + std::clamp(int(std::floor(i * binWf)),  0, std::max(0, W - 1));
+        int       x1 = leftMargin + std::clamp(int(std::floor((i + 1) * binWf)) - 1, 0, std::max(0, W - 1));
+        if (x1 < x0) x1 = x0;
+
+        int h = int(std::round(hist.at<float>(i) * hScale));
+        h = std::clamp(h, 0, std::max(0, H - topMargin));
+
+        cv::rectangle(canvas, {x0, baseY}, {x1, baseY - h}, bar, cv::FILLED, cv::LINE_8);
+    }
+
+    QImage qi(canvas.data, canvas.cols, canvas.rows, int(canvas.step), QImage::Format_BGR888);
+    if (tooltip) {
+        *tooltip = QString("Histogram: 256 bins | bg ignored: %1 | size=%2x%3 | canvas=%4x%5")
+                        .arg(negativeMode ? "251..255" : "0..4")
+                        .arg(src8.cols).arg(src8.rows)
+                        .arg(W).arg(H);
+    }
+    return qi.copy();
+}
+
+void AppController::onHistogramUpdateRequested(const QSize& canvas)
+{
+    qDebug() << "[CTRL][Hist] onHistogramUpdateRequested ENTER size=" << canvas;
+    if (!m_view) { qWarning() << "[CTRL][Hist] no view"; return; }
+
+    // Pick the best available 8-bit image: prefer last shown; else current single; else current slice
+    cv::Mat src;
+    if (!m_lastImg8.empty()) {
+        src = m_lastImg8;
+    } else if (!m_display8.empty()) {
+        src = m_display8;
+    } else if (!m_slices8.empty()) {
+        const int idx = (m_currentSlice >= 0 && m_currentSlice < (int)m_slices8.size()) ? m_currentSlice : 0;
+        src = m_slices8[idx];
+    } // else src remains empty -> placeholder
+
+    QString tip;
+    QImage histImg = renderHistogram(src, canvas, m_negativeMode, &tip);
+    m_view->setHistogramImage(histImg, tip);
+
+    qDebug() << "[CTRL][Hist] onHistogramUpdateRequested EXIT";
+}
+
+// =====================================================================
+// Image effects (Negative)
+// =====================================================================
 
 // app_controller.cpp
 
@@ -895,7 +1015,10 @@ void AppController::toggleNegative()
         }
     }
 
-    if (m_view) m_view->onNegativeModeChanged(m_negativeMode); // keep menu check in sync
+    if (m_view) {
+        m_view->onNegativeModeChanged(m_negativeMode); // keep menu check in sync
+        // If histogram is visible, the view will emit requestHistogramUpdate on its own
+    }
     qDebug() << "[CTRL][FX] toggleNegative EXIT, new state =" << (m_negativeMode ? "ON" : "OFF");
 }
 
@@ -932,4 +1055,3 @@ void AppController::postSplashUpdateFromEngineThread(int pct, const QString& sta
     // If engine is called synchronously on GUI thread, allow paints
     QCoreApplication::processEvents(QEventLoop::AllEvents, 8);
 }
-
