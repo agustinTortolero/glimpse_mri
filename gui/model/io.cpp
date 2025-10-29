@@ -1,4 +1,4 @@
-// model/io.cpp
+
 #include "io.hpp"
 
 #include <QDebug>
@@ -6,11 +6,11 @@
 #include <QVariantMap>
 #include <QString>
 #include <QByteArray>
-#include <cstdarg>  // for va_list / va_start / va_end
-#include <cstdio>   // for std::fprintf / std::vfprintf
+#include <cstdarg>
+#include <cstdio>
 
-#include <dcmtk/dcmdata/dctk.h>       // DcmFileFormat, DcmDataset, find/get
-#include <dcmtk/dcmdata/dcdeftag.h>   // DCM_* tag keys
+#include <dcmtk/dcmdata/dctk.h>
+#include <dcmtk/dcmdata/dcdeftag.h>
 
 
 
@@ -18,7 +18,7 @@
 #include <crtdbg.h>
 #endif
 
-// ---------- CRT check toggle (Debug-only, clarity over perf) ----------
+
 #ifndef DICOM_CRT_HEAVY_CHECKS
 #define DICOM_CRT_HEAVY_CHECKS 0
 #endif
@@ -33,31 +33,31 @@ if (!_CrtCheckMemory()) { \
 #define CRT_CHECK() do{}while(0)
 #endif
 
-// ---------- Diagnostic toggles ----------
-// 0 = normal; 1 = early return (for experiments)
+
+
 #ifndef DCMTK_SKIP_DI_DESTRUCTOR_ON_SUCCESS
 #define DCMTK_SKIP_DI_DESTRUCTOR_ON_SUCCESS 0
 #endif
-// 0 = normal; 1 = ALSO skip ~DcmFileFormat on success (diagnostic)
+
 #ifndef DCMTK_SKIP_FF_DESTRUCTOR_ON_SUCCESS
 #define DCMTK_SKIP_FF_DESTRUCTOR_ON_SUCCESS 0
 #endif
 
-// If 1 → skip DicomImage path and use raw PixelData fallback only.
+
 #ifndef DCMTK_FORCE_RAW_PIXEL_FALLBACK
 #define DCMTK_FORCE_RAW_PIXEL_FALLBACK 0
 #endif
 
-// Write a diagnostic PNG of the first decoded frame to the temp directory
+
 #ifndef IO_DEBUG_DUMP_FIRST_PNG
 #define IO_DEBUG_DUMP_FIRST_PNG 1
 #endif
 
-// ---------------- OpenCV ----------------
+
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
-// ---------------- STL ----------------
+
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
@@ -69,38 +69,38 @@ if (!_CrtCheckMemory()) { \
 #include <memory>
 #include <string>
 #include <vector>
-#include <cmath>   // for sqrt in oblique ordering
+#include <cmath>
 
 namespace fs = std::filesystem;
 
-// ---------------- DCMTK ----------------
+
 #include <dcmtk/dcmdata/dctk.h>
 #include <dcmtk/dcmdata/dcdeftag.h>
 #include <dcmtk/dcmdata/dcuid.h>
 #include <dcmtk/dcmdata/dcistrmf.h>
 #include <dcmtk/dcmdata/dcostrmf.h>
-#include <dcmtk/dcmdata/dcrledrg.h> // RLE decoder
+#include <dcmtk/dcmdata/dcrledrg.h>
 #include <dcmtk/dcmimgle/dcmimage.h>
-#include <dcmtk/dcmjpeg/djdecode.h> // JPEG
-#include <dcmtk/dcmjpls/djdecode.h> // JPEG-LS
+#include <dcmtk/dcmjpeg/djdecode.h>
+#include <dcmtk/dcmjpls/djdecode.h>
 #ifdef WITH_DCMTK_DCMJ2K
-#include <dcmtk/dcmj2k/djdecode.h>  // JPEG 2000 (if built)
+#include <dcmtk/dcmj2k/djdecode.h>
 #endif
 
-// ======== DICOM Secondary Capture (grayscale, 8-bit, single frame) ========
+
 #include <dcmtk/dcmdata/dcfilefo.h>
-#include <dcmtk/dcmdata/dcuid.h>        // UID_*, dcmGenerateUniqueIdentifier
+#include <dcmtk/dcmdata/dcuid.h>
 #include <dcmtk/dcmdata/dcostrmb.h>
 #include <dcmtk/dcmdata/dcmetinf.h>
 
-// ---------------- HDF5 + pugixml (for ISMRMRD XML) ----------------
+
 #include <H5Cpp.h>
-#include <hdf5.h>   // H5Dvlen_reclaim
+#include <hdf5.h>
 #include <pugixml.hpp>
 
-// ---------------------------------
-// Small helpers (debug logging)
-// ---------------------------------
+
+
+
 static inline void dbg_line(std::string* dbg, const std::string& s) {
     if (dbg) dbg->append(s + "\n");
     std::cerr << s << "\n";
@@ -115,7 +115,7 @@ static inline bool has_ext_ci(const std::string& path, const char* ext) {
     return e == to_lower_copy(ext);
 }
 static bool is_dicom_magic(const std::string& path) {
-    // DICOM: "DICM" at offset 128
+
     std::ifstream f(path, std::ios::binary);
     if (!f) return false;
     f.seekg(128, std::ios::beg);
@@ -124,7 +124,7 @@ static bool is_dicom_magic(const std::string& path) {
     return (f.gcount() == 4 && tag[0]=='D' && tag[1]=='I' && tag[2]=='C' && tag[3]=='M');
 }
 static bool is_hdf5_magic(const std::string& path) {
-    // HDF5 magic: 0x89 H D F \r \n 0x1A \n
+
     std::ifstream f(path, std::ios::binary);
     if (!f) return false;
     unsigned char sig[8] = {};
@@ -135,9 +135,9 @@ static bool is_hdf5_magic(const std::string& path) {
     return true;
 }
 
-// ---------------------------------
-// DCMTK global codec init
-// ---------------------------------
+
+
+
 namespace { bool g_dcmtk_inited = false; }
 
 namespace io {
@@ -171,9 +171,9 @@ void dcmtk_global_shutdown() {
     g_dcmtk_inited = false;
 }
 
-// ---------------------------------
-// Probe by extension/magic (UI hint)
-// ---------------------------------
+
+
+
 ProbeResult probe(const std::string& path, std::string* dbg) {
     dbg_line(dbg, "[IO][probe] path=" + path);
 
@@ -186,25 +186,25 @@ ProbeResult probe(const std::string& path, std::string* dbg) {
         return {Flavor::HDF5_Unknown, ""};
     }
 
-    // Fallback: treat as HDF5_Unknown to avoid using a non-existent Flavor::Unknown
+
     dbg_line(dbg, "[IO][probe] -> Unknown (treat as HDF5_Unknown for UI)");
     return {Flavor::HDF5_Unknown, ""};
 }
 
-} // namespace io
+}
 
-// ---------------------------------
-// Internal DICOM helpers (anon namespace)
-// ---------------------------------
+
+
+
 namespace {
 
-// ------------------------------------------------------------
-// Oblique-safe ordering key:
-// - Returns SeriesInstanceUID (uid), InstanceNumber (inst),
-//   and projection distance zproj = dot(IPP, normal),
-//   where normal = normalize(row × col) from IOP.
-// - Falls back to IPP.z or 0.0 if tags missing.
-// ------------------------------------------------------------
+
+
+
+
+
+
+
 static bool dcmtk_series_key(const std::string& path,
                              std::string& uid,
                              int&         instanceNumber,
@@ -212,15 +212,15 @@ static bool dcmtk_series_key(const std::string& path,
 {
     std::cerr << "[DBG][DICOM][SERIES_KEY] ENTER path=" << path << "\n";
 
-    // Make sure codecs are registered (safe to call multiple times).
+
     io::dcmtk_global_init();
 
     DcmFileFormat ff;
 
-    // Cap max read length per element so DCMTK doesn’t try to slurp huge items.
+
     const E_TransferSyntax readXfer = EXS_Unknown;
     const E_GrpLenEncoding glenc    = EGL_noChange;
-    const Uint32           maxRead  = 64u * 1024u;   // 64 KB per element
+    const Uint32           maxRead  = 64u * 1024u;
     const E_FileReadMode   mode     = ERM_autoDetect;
 
     OFCondition st = ff.loadFile(path.c_str(), readXfer, glenc, maxRead, mode);
@@ -234,32 +234,32 @@ static bool dcmtk_series_key(const std::string& path,
         return false;
     }
 
-    // --- SeriesInstanceUID ---
+
     OFString sUID;
     if (ds->findAndGetOFString(DCM_SeriesInstanceUID, sUID).good() && !sUID.empty()) {
         uid = sUID.c_str();
     } else {
         std::cerr << "[DBG][DICOM][SERIES_KEY] missing SeriesInstanceUID\n";
-        return false; // without UID we can’t group into series
+        return false;
     }
 
-    // --- InstanceNumber (fallback: -1) ---
+
     Sint32 instTmp = -1;
     if (ds->findAndGetSint32(DCM_InstanceNumber, instTmp).good()) {
         instanceNumber = static_cast<int>(instTmp);
     } else {
-        // Some files omit it; we keep -1 and rely on z sort.
+
         instanceNumber = -1;
         std::cerr << "[DBG][DICOM][SERIES_KEY] InstanceNumber not present\n";
     }
 
-    // --- Z projection for sorting ---
-    // Prefer ImagePositionPatient (0020,0032) z component, fallback to SliceLocation (0020,1041).
+
+
     zproj = 0.0;
     OFString ippStr;
     if (ds->findAndGetOFStringArray(DCM_ImagePositionPatient, ippStr).good() && !ippStr.empty()) {
-        // DICOM multi-values are "\" separated.
-        // Expect "x\y\z". We only need z.
+
+
         std::string s = ippStr.c_str();
         double xyz[3] = {0,0,0};
         int idx = 0;
@@ -277,22 +277,22 @@ static bool dcmtk_series_key(const std::string& path,
         }
         if (idx <= 3) {
             if (idx < 3) {
-                // last piece
+
                 try { xyz[idx] = std::stod(cur); } catch (...) {}
             } else {
-                // already parsed three pieces; ignore tail
+
             }
         }
         zproj = xyz[2];
         std::cerr << "[DBG][DICOM][SERIES_KEY] z from ImagePositionPatient = " << zproj << "\n";
     } else {
-        // Fallback: SliceLocation
+
         double sl = 0.0;
         if (ds->findAndGetFloat64(DCM_SliceLocation, sl).good()) {
             zproj = sl;
             std::cerr << "[DBG][DICOM][SERIES_KEY] z from SliceLocation = " << zproj << "\n";
         } else {
-            // Last fallback: 0.0 (grouping still works via UID and instanceNumber).
+
             std::cerr << "[DBG][DICOM][SERIES_KEY] no z info; default 0.0\n";
             zproj = 0.0;
         }
@@ -303,11 +303,11 @@ static bool dcmtk_series_key(const std::string& path,
     return true;
 }
 
-// ------------------------------
-// Single-file → frames (8-bit), robust:
-// 1) Try DicomImage (handles compressed transfer syntaxes)
-// 2) Fallback to raw PixelData path for uncompressed mono
-// ------------------------------
+
+
+
+
+
 static bool dcmtk_read_one_file_u8(const std::string& path,
                                    std::vector<cv::Mat>& frames,
                                    std::string* why)
@@ -317,7 +317,7 @@ static bool dcmtk_read_one_file_u8(const std::string& path,
     frames.clear();
 
 #if !DCMTK_FORCE_RAW_PIXEL_FALLBACK
-    // ---------- 1) Try DicomImage first (robust, handles compression) ----------
+
     {
         std::cerr << "[DBG][DICOM][DCMTK] trying DicomImage path...\n";
         std::unique_ptr<DicomImage> di(new DicomImage(path.c_str()));
@@ -336,12 +336,12 @@ static bool dcmtk_read_one_file_u8(const std::string& path,
                       << " frames=" << nFrames
                       << " isMono=" << (isMono ? "1" : "0") << "\n";
 
-            // Ensure a contrast window so output spans 0..255
+
             di->setMinMaxWindow();
 
             frames.reserve(nFrames);
             for (unsigned long f = 0; f < nFrames; ++f) {
-                const void* out = di->getOutputData(8, f, 0 /*planar*/);
+                const void* out = di->getOutputData(8, f, 0 );
                 if (!out) {
                     std::cerr << "[WRN][DICOM][DCMTK] getOutputData returned null at frame " << f << "\n";
                     continue;
@@ -373,7 +373,7 @@ static bool dcmtk_read_one_file_u8(const std::string& path,
     std::cerr << "[DBG][DICOM][DCMTK] DicomImage path DISABLED by DCMTK_FORCE_RAW_PIXEL_FALLBACK\n";
 #endif
 
-    // ---------- 2) Fallback: raw PixelData path (uncompressed mono only) ----------
+
     std::cerr << "[DBG][DICOM][DCMTK] raw PixelData fallback...\n";
     auto ff = std::make_unique<DcmFileFormat>();
     OFCondition st = ff->loadFile(path.c_str());
@@ -389,7 +389,7 @@ static bool dcmtk_read_one_file_u8(const std::string& path,
         return false;
     }
 
-    // If transfer syntax is encapsulated (compressed), bail from raw path
+
     const E_TransferSyntax xfer = ds->getOriginalXfer();
     const DcmXfer xf(xfer);
     const OFBool isEnc = xf.isEncapsulated();
@@ -414,7 +414,7 @@ static bool dcmtk_read_one_file_u8(const std::string& path,
     if (!bitsAlloc) bitsAlloc = 16;
     if (!spp)       spp       = 1;
 
-    // NumberOfFrames (optional; defaults to 1)
+
     uint32_t nFrames = 1;
     {
         OFString nf;
@@ -422,11 +422,11 @@ static bool dcmtk_read_one_file_u8(const std::string& path,
             try {
                 int tmp = std::max(1, std::stoi(nf.c_str()));
                 nFrames = static_cast<uint32_t>(tmp);
-            } catch(...) { /* keep 1 */ }
+            } catch(...) {  }
         }
     }
 
-    // PixelRepresentation (0 = unsigned, 1 = signed), used for 16-bit scaling
+
     Uint16 pixRep = 0;
     ds->findAndGetUint16(DCM_PixelRepresentation, pixRep);
 
@@ -438,9 +438,9 @@ static bool dcmtk_read_one_file_u8(const std::string& path,
               << " PixelRepresentation=" << pixRep
               << "\n";
 
-    // PixelData
+
     DcmElement* elem = nullptr;
-    st = ds->findAndGetElement(DCM_PixelData, elem, /*searchIntoSub=*/true);
+    st = ds->findAndGetElement(DCM_PixelData, elem, true);
     if (st.bad() || !elem) {
         if (why) *why = "No PixelData";
         std::cerr << "[ERR][DICOM] Cannot find PixelData: " << st.text() << "\n";
@@ -450,7 +450,7 @@ static bool dcmtk_read_one_file_u8(const std::string& path,
     const uint32_t framePixels = static_cast<uint32_t>(rows) * static_cast<uint32_t>(cols);
     frames.clear();
 
-    // ---------------- 8-bit mono ----------------
+
     if (spp == 1 && bitsAlloc == 8) {
         Uint8* base = nullptr;
         st = elem->getUint8Array(base);
@@ -477,7 +477,7 @@ static bool dcmtk_read_one_file_u8(const std::string& path,
                       << " (8-bit mono)\n";
         }
     }
-    // ---------------- 16-bit mono → scale to 8-bit ----------------
+
     else if (spp == 1 && bitsAlloc == 16) {
         Uint16* base16 = nullptr;
         st = elem->getUint16Array(base16);
@@ -498,7 +498,7 @@ static bool dcmtk_read_one_file_u8(const std::string& path,
         for (uint32_t f = 0; f < nFrames; ++f) {
             const Uint16* src = base16 + static_cast<size_t>(f) * framePixels;
 
-            // Per-frame min/max for better visual contrast
+
             Uint16 vmin = std::numeric_limits<Uint16>::max();
             Uint16 vmax = 0;
             for (uint32_t i = 0; i < framePixels; ++i) {
@@ -546,9 +546,9 @@ static bool dcmtk_read_one_file_u8(const std::string& path,
     return !frames.empty();
 }
 
-// ------------------------------
-// Single-file → frames (16-bit)
-// ------------------------------
+
+
+
 static bool dcmtk_read_one_file_u16(const std::string& path,
                                     std::vector<cv::Mat>& frames16,
                                     std::string* why)
@@ -583,7 +583,7 @@ static bool dcmtk_read_one_file_u16(const std::string& path,
     if (!bitsAlloc) bitsAlloc = 16;
     if (!spp)       spp       = 1;
 
-    // NumberOfFrames
+
     uint32_t nFrames = 1;
     {
         OFString nf;
@@ -599,9 +599,9 @@ static bool dcmtk_read_one_file_u16(const std::string& path,
               << " NumberOfFrames=" << nFrames
               << "\n";
 
-    // PixelData
+
     DcmElement* pixelElem = nullptr;
-    st = ds->findAndGetElement(DCM_PixelData, pixelElem, /*searchIntoSub=*/true);
+    st = ds->findAndGetElement(DCM_PixelData, pixelElem, true);
     if (st.bad() || !pixelElem) {
         if (why) *why = "No PixelData";
         std::cerr << "[ERR][DICOM] Cannot find PixelData: " << st.text() << "\n";
@@ -617,7 +617,7 @@ static bool dcmtk_read_one_file_u16(const std::string& path,
         return false;
     }
 
-    // If the file is 8-bit, up-convert (clarity over fidelity)
+
     if (bitsAlloc == 8) {
         std::vector<cv::Mat> frames8;
         if (!dcmtk_read_one_file_u8(path, frames8, why)) return false;
@@ -630,7 +630,7 @@ static bool dcmtk_read_one_file_u16(const std::string& path,
         return !frames16.empty();
     }
 
-    // 16-bit mono: direct copy per frame
+
     Uint16* base16 = nullptr;
     st = pixelElem->getUint16Array(base16);
     if (st.bad() || !base16) {
@@ -661,9 +661,9 @@ static bool dcmtk_read_one_file_u16(const std::string& path,
     return true;
 }
 
-// ------------------------------
-// Series collector helpers
-// ------------------------------
+
+
+
 struct SeriesItem { std::string path; int inst; double z; };
 
 static void sort_series_items(std::vector<SeriesItem>& items) {
@@ -673,7 +673,7 @@ static void sort_series_items(std::vector<SeriesItem>& items) {
     });
 }
 
-// Build a whole series stack (8-bit) from a single-seed file
+
 static bool collect_series_from_seed_file_u8(const std::string& seed,
                                              std::vector<cv::Mat>& frames,
                                              std::string* why)
@@ -729,7 +729,7 @@ static bool collect_series_from_seed_file_u8(const std::string& seed,
     return !frames.empty();
 }
 
-// Build a whole series stack (16-bit) from a single-seed file
+
 static bool collect_series_from_seed_file_u16(const std::string& seed,
                                               std::vector<cv::Mat>& frames16,
                                               std::string* why)
@@ -785,11 +785,11 @@ static bool collect_series_from_seed_file_u16(const std::string& seed,
     return !frames16.empty();
 }
 
-} // anon namespace
+}
 
-// ========================================================
-// Exported functions (namespace io)
-// ========================================================
+
+
+
 namespace io {
 
 bool read_dicom_frames_gray8(const std::string& pathOrDir,
@@ -803,13 +803,13 @@ bool read_dicom_frames_gray8(const std::string& pathOrDir,
     const fs::path p(pathOrDir);
     frames.clear();
 
-    // ------------------------------
-    // SINGLE FILE PATH
-    // ------------------------------
+
+
+
     if (fs::is_regular_file(p, ec)) {
         cerr << "[DBG][DICOM][IO] FILE (gray8): " << pathOrDir << endl;
 
-        // 1) Decode the seed file first (handles multi-frame Enhanced DICOM)
+
         std::vector<cv::Mat> seedFrames;
         bool okDecode = false;
         try {
@@ -831,17 +831,17 @@ bool read_dicom_frames_gray8(const std::string& pathOrDir,
             return false;
         }
 
-        // Multi-frame seed? great—use it and we’re done.
+
         if (seedFrames.size() >= 2) {
             frames.swap(seedFrames);
             cerr << "[DBG][DICOM][IO] multi-frame seed -> using " << frames.size() << " frames\n";
             return true;
         }
 
-        // 2) Single-frame seed → try building a series from folder (same SeriesInstanceUID)
+
         cerr << "[DBG][DICOM][IO] seed has 1 frame; trying folder series collection…\n";
 
-        // Extract seed UID with helper (ensures consistency)
+
         std::string targetUID; int dummyInst = 0; double dummyZ = 0.0;
         if (!dcmtk_series_key(pathOrDir, targetUID, dummyInst, dummyZ) || targetUID.empty()) {
             cerr << "[DBG][DICOM][SERIES] seed has no SeriesInstanceUID; using seed frame only\n";
@@ -872,7 +872,7 @@ bool read_dicom_frames_gray8(const std::string& pathOrDir,
         cerr << "[DBG][DICOM][SERIES] series items=" << items.size()
              << " (UID=" << targetUID << ")\n";
 
-        // Decode each file and append all frames
+
         std::vector<cv::Mat> seriesFrames;
         size_t appendedFiles = 0;
         for (const auto& it : items) {
@@ -896,21 +896,21 @@ bool read_dicom_frames_gray8(const std::string& pathOrDir,
             return true;
         }
 
-        // Fall back to the single decoded frame
+
         frames.swap(seedFrames);
         cerr << "[DBG][DICOM][IO] no multi-slice series discovered; using single frame\n";
         return !frames.empty();
     }
 
-    // ------------------------------
-    // DIRECTORY PATH
-    // ------------------------------
+
+
+
     if (!fs::is_directory(p, ec)) {
         if (why) *why = "Path is neither file nor directory";
         return false;
     }
 
-    // Find a seed file in the directory
+
     std::string seed;
     for (auto& e : fs::directory_iterator(p)) {
         if (!e.is_regular_file(ec)) continue;
@@ -924,7 +924,7 @@ bool read_dicom_frames_gray8(const std::string& pathOrDir,
         return false;
     }
 
-    // Determine target SeriesInstanceUID from seed (via helper)
+
     std::string targetUID; int seedInst = 0; double seedZ = 0.0;
     if (!dcmtk_series_key(seed, targetUID, seedInst, seedZ) || targetUID.empty()) {
         if (why) *why = "Cannot read SeriesInstanceUID from seed";
@@ -1011,9 +1011,9 @@ bool io::read_dicom_frames_u16(const std::string& path,
         std::cerr << "[DBG][DICOM][IO] dims=" << cols << "x" << rows
                   << " frames=" << frames << "\n";
 
-        // Try to extract each frame in 16-bit. Fallback to 8-bit and up-convert if needed.
+
         for (int f = 0; f < std::max(frames, 1); ++f) {
-            // --- try 16-bit directly ---
+
             std::vector<uint16_t> buf16(static_cast<size_t>(rows) * static_cast<size_t>(cols));
             bool ok16 = di.getOutputData(buf16.data(),
                                          static_cast<unsigned long>(buf16.size() * sizeof(uint16_t)),
@@ -1032,13 +1032,13 @@ bool io::read_dicom_frames_u16(const std::string& path,
                     return false;
                 }
 
-                // Up-convert 8-bit to 16-bit (simple left shift, preserves order).
+
                 for (size_t i = 0; i < buf16.size(); ++i) {
                     buf16[i] = static_cast<uint16_t>(buf8[i]) << 8;
                 }
             }
 
-            // Wrap into CV_16UC1 and PUSH (copy)
+
             cv::Mat frame(rows, cols, CV_16UC1);
             std::memcpy(frame.data, buf16.data(), buf16.size() * sizeof(uint16_t));
             out16.emplace_back(std::move(frame));
@@ -1051,7 +1051,7 @@ bool io::read_dicom_frames_u16(const std::string& path,
     };
 
     if (fs::is_regular_file(p, ec)) {
-        // FAST PATH: decode just the file; do not try to aggregate the whole folder.
+
         const bool ok = decode_one_file_u16(path);
         if (!ok && why && why->empty()) *why = "Failed to decode DICOM file";
         return ok;
@@ -1068,7 +1068,7 @@ bool io::read_dicom_frames_u16(const std::string& path,
         };
         std::vector<Rec> recs;
 
-        // Pass 1: probe all DICOM-ish files in this directory (non-recursive).
+
         size_t probed = 0, admitted = 0;
         for (const auto& de : fs::directory_iterator(p, ec)) {
             if (ec) break;
@@ -1092,7 +1092,7 @@ bool io::read_dicom_frames_u16(const std::string& path,
             return false;
         }
 
-        // Group by UID and choose the largest series.
+
         std::unordered_map<std::string, int> counts;
         for (auto& r : recs) counts[r.uid]++;
 
@@ -1103,7 +1103,7 @@ bool io::read_dicom_frames_u16(const std::string& path,
         }
         std::cerr << "[DBG][DICOM][IO] best series uid=" << bestUID << " count=" << bestCount << "\n";
 
-        // Filter to best UID and sort by (z, inst, path) for deterministic order.
+
         std::vector<Rec> seq;
         seq.reserve(static_cast<size_t>(bestCount));
         for (auto& r : recs) if (r.uid == bestUID) seq.push_back(r);
@@ -1116,7 +1116,7 @@ bool io::read_dicom_frames_u16(const std::string& path,
 
         std::cerr << "[DBG][DICOM][IO] decoding " << seq.size() << " file(s) for best series…\n";
 
-        // Pass 2: decode each file and append all frames found.
+
         size_t before = out16.size();
         for (size_t i = 0; i < seq.size(); ++i) {
             std::cerr << "[DBG][DICOM][IO] [" << i+1 << "/" << seq.size() << "] " << seq[i].file << "\n";
@@ -1137,7 +1137,7 @@ bool io::read_dicom_frames_u16(const std::string& path,
 
 bool read_dicom_basic_meta(const std::string& path, DicomMeta& out, std::string* why)
 {
-    // ---------------------- local helpers ----------------------
+
     auto setWhy = [&](const char* s){ if (why) *why = s ? s : ""; };
 
     auto dbg = [&](const char* fmt, ...) {
@@ -1182,7 +1182,7 @@ bool read_dicom_basic_meta(const std::string& path, DicomMeta& out, std::string*
         std::string frac;
         const auto dot = tm.find('.');
         if (dot != std::string::npos) { frac = tm.substr(dot); tm = tm.substr(0, dot); }
-        while (tm.size() < 6) tm.push_back('0'); // HHMMSS
+        while (tm.size() < 6) tm.push_back('0');
         tm = tm.substr(0,2) + ":" + tm.substr(2,2) + ":" + tm.substr(4,2) + frac;
         return tm;
     };
@@ -1249,7 +1249,7 @@ bool read_dicom_basic_meta(const std::string& path, DicomMeta& out, std::string*
         }
     };
 
-    // Safe text fetch that uses findAndGetString (avoids getOFStringArray path)
+
     auto fetch_text_utf8 = [&](DcmDataset* ds, const DcmTagKey& key, const char* name) -> std::string {
         if (!ds) return {};
         DcmElement* el = nullptr;
@@ -1274,16 +1274,16 @@ bool read_dicom_basic_meta(const std::string& path, DicomMeta& out, std::string*
         }
 
         const char* p = nullptr;
-        st = ds->findAndGetString(key, p /*, searchIntoSub = OFFalse*/);
+        st = ds->findAndGetString(key, p );
         if (st.bad() || !p) {
             dbg("%s: findAndGetString => %s; returning empty", name ? name : "TAG",
                 st.good() ? "null" : st.text());
             return {};
         }
 
-        // Safe copy with cap
+
         size_t n = std::strlen(p);
-        const size_t CAP = 1u << 20; // 1 MiB
+        const size_t CAP = 1u << 20;
         if (n > CAP) { warn("%s: value too large (%zu), capping to %zu", name, n, CAP); n = CAP; }
 
         std::string s;
@@ -1312,7 +1312,7 @@ bool read_dicom_basic_meta(const std::string& path, DicomMeta& out, std::string*
         trim_ascii_inplace(s);
         return s;
     };
-    // -----------------------------------------------------------
+
 
     std::fprintf(stderr, "[DBG][DICOM][META] ENTER path=%s\n", path.c_str());
     out = {};
@@ -1321,7 +1321,7 @@ bool read_dicom_basic_meta(const std::string& path, DicomMeta& out, std::string*
         DcmFileFormat ff;
         const E_TransferSyntax readXfer = EXS_Unknown;
         const E_GrpLenEncoding glenc    = EGL_noChange;
-        const Uint32           maxRead  = 64u * 1024u;    // cap per element
+        const Uint32           maxRead  = 64u * 1024u;
         const E_FileReadMode   mode     = ERM_autoDetect;
 
         dbg("loadFile(...) begin (cap=%u bytes/element)", (unsigned)maxRead);
@@ -1342,7 +1342,7 @@ bool read_dicom_basic_meta(const std::string& path, DicomMeta& out, std::string*
             return false;
         }
 
-        // -------- TEXT TAGS (with safe path) --------
+
         dbg("TAG: Manufacturer...");
         out.manufacturer = fetch_text_utf8(ds, DCM_Manufacturer, "Manufacturer");
         dbg("  ok: '%s'", printable_preview(out.manufacturer.c_str(), out.manufacturer.size()).c_str());
@@ -1362,7 +1362,7 @@ bool read_dicom_basic_meta(const std::string& path, DicomMeta& out, std::string*
             dbg("  ok: '%s'", printable_preview(out.studyTime.c_str(), out.studyTime.size()).c_str());
         }
 
-        // -------- NUMERIC-ISH TAGS --------
+
         dbg("TAG: B0T...");
         out.B0T = get_number_as_string3(ds, DCM_MagneticFieldStrength, "MagneticFieldStrength");
         dbg("  ok: '%s'", printable_preview(out.B0T.c_str(), out.B0T.size()).c_str());
@@ -1379,7 +1379,7 @@ bool read_dicom_basic_meta(const std::string& path, DicomMeta& out, std::string*
         out.ti_ms = get_number_as_string3(ds, DCM_InversionTime, "InversionTime");
         dbg("  ok: '%s'", printable_preview(out.ti_ms.c_str(), out.ti_ms.size()).c_str());
 
-        // -------- Summary --------
+
         std::fprintf(stderr,
                      "[DBG][DICOM][META] OK Manuf='%s' Model='%s' Date='%s' Time='%s' "
                      "B0(T)='%s' TR(ms)='%s' TE(ms)='%s' TI(ms)='%s'\n",
@@ -1408,9 +1408,9 @@ bool read_dicom_basic_meta(const std::string& path, DicomMeta& out, std::string*
     return false;
 }
 
-// ---------------------------------
-// HDF5 — ISMRMRD XML
-// ---------------------------------
+
+
+
 bool read_hdf5_ismrmrd_meta(const std::string& path, DicomMeta& out, std::string* why) {
     try {
         H5::H5File f(path, H5F_ACC_RDONLY);
@@ -1424,26 +1424,26 @@ bool read_hdf5_ismrmrd_meta(const std::string& path, DicomMeta& out, std::string
             return false;
         }
 
-        // Read vlen string
+
         char* cstr = nullptr;
         H5::StrType st = ds.getStrType();
         ds.read(&cstr, st);
         std::string xml(cstr ? cstr : "");
 
-        // Reclaim vlen mem
+
         hid_t had = ds.getId();
         hid_t tid = st.getId();
         hid_t sid = ds.getSpace().getId();
         H5Dvlen_reclaim(tid, sid, H5P_DEFAULT, &cstr);
 
-        // Minimal parse hook (extend as needed)
+
         pugi::xml_document doc;
         if (!doc.load_string(xml.c_str())) {
             if (why) *why = "Bad ISMRMRD XML";
             return false;
         }
 
-        (void)out; // map fields as needed later
+        (void)out;
         return true;
 
     } catch (const H5::Exception& e) {
@@ -1455,7 +1455,7 @@ bool read_hdf5_ismrmrd_meta(const std::string& path, DicomMeta& out, std::string
     }
 }
 
-// ======== PNG writer ========
+
 bool write_png(const std::string& outPath, const cv::Mat& img, std::string* why)
 {
     std::cerr << "[IO][PNG] write_png ENTER path='" << outPath << "'\n";
@@ -1465,12 +1465,12 @@ bool write_png(const std::string& outPath, const cv::Mat& img, std::string* why)
         return false;
     }
 
-    // Make sure we have 8-bit 1ch or 3ch data for imwrite
+
     cv::Mat u8;
     if (img.type() == CV_8UC1 || img.type() == CV_8UC3) {
         u8 = img;
     } else if (img.type() == CV_16UC1) {
-        // Scale 16-bit → 8-bit (clarity over perf)
+
         double mn, mx;
         cv::minMaxLoc(img, &mn, &mx);
         if (mx <= mn) mx = mn + 1.0;
@@ -1478,10 +1478,10 @@ bool write_png(const std::string& outPath, const cv::Mat& img, std::string* why)
         f32 = (f32 - (float)mn) / (float)(mx - mn);
         f32.convertTo(u8, CV_8U, 255.0);
     } else if (img.channels() == 3 && img.depth() == CV_16U) {
-        cv::Mat tmp; img.convertTo(tmp, CV_8U, 1.0/257.0); // simple downscale
+        cv::Mat tmp; img.convertTo(tmp, CV_8U, 1.0/257.0);
         u8 = std::move(tmp);
     } else {
-        // Fallback: convert anything else to 8-bit gray
+
         cv::Mat gray;
         if (img.channels() == 3) { cv::cvtColor(img, gray, cv::COLOR_BGR2GRAY); }
         else { img.convertTo(gray, CV_8U); }
@@ -1512,7 +1512,7 @@ bool write_dicom_sc_gray8(const std::string& outPath, const cv::Mat& imgIn, std:
         return false;
     }
 
-    // Ensure 8-bit, single-channel (MONOCHROME2)
+
     cv::Mat u8;
     if (imgIn.type() == CV_8UC1) {
         u8 = imgIn;
@@ -1529,21 +1529,21 @@ bool write_dicom_sc_gray8(const std::string& outPath, const cv::Mat& imgIn, std:
         imgIn.convertTo(u8, CV_8U);
     }
 
-    // DICOM dataset
+
     DcmFileFormat ff;
     DcmDataset* ds = ff.getDataset();
 
-    // --- UIDs ---
+
     char sopInstanceUID[128] = {};
-    // NOTE: Replace this root with your organization’s UID root if you have one.
-    const char* kUID_ROOT = "1.2.826.0.1.3680043.2.1125.101"; // example root
+
+    const char* kUID_ROOT = "1.2.826.0.1.3680043.2.1125.101";
     dcmGenerateUniqueIdentifier(sopInstanceUID, kUID_ROOT);
 
-    // --- Minimal mandatory attributes for Secondary Capture ---
+
     ds->putAndInsertString(DCM_SOPClassUID, UID_SecondaryCaptureImageStorage);
     ds->putAndInsertString(DCM_SOPInstanceUID, sopInstanceUID);
 
-    // Image Pixel module (grayscale 8-bit)
+
     const Uint16 rows = (Uint16)u8.rows;
     const Uint16 cols = (Uint16)u8.cols;
     ds->putAndInsertUint16(DCM_SamplesPerPixel, 1);
@@ -1553,13 +1553,13 @@ bool write_dicom_sc_gray8(const std::string& outPath, const cv::Mat& imgIn, std:
     ds->putAndInsertUint16(DCM_BitsAllocated, 8);
     ds->putAndInsertUint16(DCM_BitsStored,    8);
     ds->putAndInsertUint16(DCM_HighBit,       7);
-    ds->putAndInsertUint16(DCM_PixelRepresentation, 0); // 0 = unsigned
+    ds->putAndInsertUint16(DCM_PixelRepresentation, 0);
 
-    // Optional but helpful
-    ds->putAndInsertString(DCM_Modality, "OT");            // Other
-    ds->putAndInsertString(DCM_ConversionType, "WSD");     // Workstation
 
-    // Pixel Data
+    ds->putAndInsertString(DCM_Modality, "OT");
+    ds->putAndInsertString(DCM_ConversionType, "WSD");
+
+
     const unsigned long nbytes = (unsigned long)(rows) * (unsigned long)(cols);
     if (!u8.isContinuous()) {
         cv::Mat tmp = u8.clone();
@@ -1570,13 +1570,13 @@ bool write_dicom_sc_gray8(const std::string& outPath, const cv::Mat& imgIn, std:
                                    reinterpret_cast<const Uint8*>(u8.data), nbytes);
     }
 
-    // File Meta Information
+
     DcmMetaInfo* meta = ff.getMetaInfo();
     meta->putAndInsertString(DCM_MediaStorageSOPClassUID, UID_SecondaryCaptureImageStorage);
     meta->putAndInsertString(DCM_MediaStorageSOPInstanceUID, sopInstanceUID);
     meta->putAndInsertString(DCM_ImplementationClassUID, kUID_ROOT);
 
-    // Save as Explicit VR Little Endian (uncompressed)
+
     const OFCondition st = ff.saveFile(outPath.c_str(), EXS_LittleEndianExplicit);
     if (st.bad()) {
         if (why) *why = st.text();
@@ -1601,16 +1601,16 @@ bool logDicomMetaBrief(const QString& path)
         return false;
     }
 
-    // Keep dataset alive by keeping 'file' in-scope.
+
     DcmDataset& ds = *file.getDataset();
 
-    // --- Read SpecificCharacterSet once (ASCII tokens like "ISO_IR 100\ISO_IR 192") ---
+
     OFString csOF;
     (void)ds.findAndGetOFStringArray(DCM_SpecificCharacterSet, csOF);
     const QString csRaw = QString::fromLatin1(csOF.c_str(), static_cast<int>(csOF.size()));
     const QStringList csVals = csRaw.split('\\', Qt::SkipEmptyParts);
 
-    // --- Helpers (local) ---
+
     auto decodeWithCS = [&](const OFString& s) -> QString {
         const QByteArray ba(s.c_str(), static_cast<int>(s.size()));
         auto tryUtf8   = [&](){ return QString::fromUtf8(ba);    };
@@ -1620,21 +1620,21 @@ bool logDicomMetaBrief(const QString& path)
         bool preferUtf8   = false;
         for (const QString& v0 : csVals) {
             const QString v = v0.trimmed();
-            if (v == QLatin1String("ISO_IR 192")) preferUtf8 = true; // UTF-8
-            // Common single-byte sets that map well to Latin-1 fallback:
-            if (v == QLatin1String("ISO_IR 100") || // Latin-1
-                v == QLatin1String("ISO_IR 101") || // Latin-2
-                v == QLatin1String("ISO_IR 109") || // Latin-3
-                v == QLatin1String("ISO_IR 110") || // Latin-4
-                v == QLatin1String("ISO_IR 148"))   // Latin-5
+            if (v == QLatin1String("ISO_IR 192")) preferUtf8 = true;
+
+            if (v == QLatin1String("ISO_IR 100") ||
+                v == QLatin1String("ISO_IR 101") ||
+                v == QLatin1String("ISO_IR 109") ||
+                v == QLatin1String("ISO_IR 110") ||
+                v == QLatin1String("ISO_IR 148"))
                 preferLatin1 = true;
         }
 
         QString out = preferLatin1 ? tryLatin1()
                       : preferUtf8   ? tryUtf8()
-                                   : tryUtf8(); // default attempt
+                                   : tryUtf8();
 
-        // Fallback if bytes weren’t actually valid UTF-8
+
         if (out.contains(QChar::ReplacementCharacter))
             out = tryLatin1();
 
@@ -1649,14 +1649,14 @@ bool logDicomMetaBrief(const QString& path)
     };
 
     auto getUInt = [&](const DcmTagKey& key, quint32& out) -> bool {
-        // Prefer native integer accessors when the VR is US/UL.
+
         Uint16 u16 = 0;
         if (ds.findAndGetUint16(key, u16).good()) { out = static_cast<quint32>(u16); return true; }
         Uint32 u32 = 0;
         if (ds.findAndGetUint32(key, u32).good()) { out = static_cast<quint32>(u32); return true; }
         Sint32 s32 = 0;
         if (ds.findAndGetSint32(key, s32).good() && s32 >= 0) { out = static_cast<quint32>(s32); return true; }
-        // Many numeric-ish tags (e.g. NumberOfFrames) are IS/DS strings:
+
         const QString as = getStr(key);
         bool ok = false; const quint32 tmp = as.toUInt(&ok);
         if (ok) { out = tmp; return true; }
@@ -1676,8 +1676,8 @@ bool logDicomMetaBrief(const QString& path)
             qDebug().noquote() << "[DBG][DICOM][META]" << name << "= <n/a>";
     };
 
-    // --- Read & log safe, human-useful fields only (avoid sequences/binary) ---
-    const QString specificCS   = csRaw; // already decoded as ASCII above
+
+    const QString specificCS   = csRaw;
     const QString manuf        = getStr(DCM_Manufacturer);
     const QString model        = getStr(DCM_ManufacturerModelName);
     const QString swVersions   = getStr(DCM_SoftwareVersions);
@@ -1728,7 +1728,7 @@ QVariantMap readDicomMetaMinimal(const QString& path)
 
     DcmDataset& ds = *file.getDataset();
 
-    // --- Helpers (local) ---
+
     auto ofToQString = [](const OFString& s) -> QString {
         const QByteArray ba(s.c_str(), static_cast<int>(s.size()));
         QString out = QString::fromUtf8(ba);
@@ -1754,7 +1754,7 @@ QVariantMap readDicomMetaMinimal(const QString& path)
         return ok ? QVariant::fromValue<quint32>(val) : QVariant{};
     };
 
-    // --- Populate map with known-good fields ---
+
     out.insert("SpecificCharacterSet", getStr(DCM_SpecificCharacterSet));
     out.insert("Manufacturer",         getStr(DCM_Manufacturer));
     out.insert("ModelName",            getStr(DCM_ManufacturerModelName));
@@ -1775,4 +1775,4 @@ QVariantMap readDicomMetaMinimal(const QString& path)
 
 
 
-} // namespace io
+}

@@ -51,11 +51,10 @@
 
 using namespace std::chrono_literals;
 
-// ===== Constructor (slider + wheel + DnD) =====
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
 {
     std::cerr << "[DBG][View][Ctor] start\n";
-    setAcceptDrops(true);                 // enable window-level drag&drop
+    setAcceptDrops(true);
     buildUi();
     std::cerr << "[DBG][View][Ctor] end\n";
 }
@@ -69,11 +68,9 @@ void MainWindow::buildUi()
     qDebug() << "[View][buildUi]";
     setCentralWidget(createCentralArea());
 
-    // Create docks (hidden by default; we will show them on first real image)
     createMetadataDock();
     createHistogramDock();
 
-    // Initial window size:
     setInitialSize();
     showDragHint();
 }
@@ -95,12 +92,11 @@ void MainWindow::createHistogramDock()
     label->setText("No image");
     label->setMinimumSize(100, 80);
     label->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    label->installEventFilter(this);  // ask controller to redraw when resized
+    label->installEventFilter(this);
 
     dock->setWidget(label);
     addDockWidget(Qt::RightDockWidgetArea, dock);
 
-    // Hidden by default (no image => no docks visible)
     dock->setFloating(false);
     dock->hide();
 
@@ -123,7 +119,6 @@ void MainWindow::setImageCV8U(const cv::Mat& m)
 
     setImage(m);
 
-    // Ask controller to update histogram if the dock is visible
     if (m_histDock && m_histDock->isVisible() && m_histLabel) {
         const QSize area = m_histLabel->contentsRect().size();
         qDebug() << "[View][setImageCV8U] requestHistogramUpdate size=" << area;
@@ -141,14 +136,12 @@ QWidget* MainWindow::createCentralArea()
     vlay->setContentsMargins(8, 8, 8, 8);
     vlay->setSpacing(6);
 
-    // --- image area ---
     m_label = new QLabel(central);
     m_label->setAlignment(Qt::AlignCenter);
     m_label->setText("No image");
-    m_label->installEventFilter(this);     // wheel navigation
-    vlay->addWidget(m_label, /*stretch*/1);
+    m_label->installEventFilter(this);
+    vlay->addWidget(m_label, 1);
 
-    // --- slice controls row (slider only) ---
     auto* row  = new QWidget(central);
     auto* hlay = new QHBoxLayout(row);
     hlay->setContentsMargins(0,0,0,0);
@@ -160,9 +153,9 @@ QWidget* MainWindow::createCentralArea()
     m_sliceSlider->setValue(0);
     m_sliceSlider->setVisible(false);
 
-    hlay->addWidget(m_sliceSlider, /*stretch*/1);
+    hlay->addWidget(m_sliceSlider, 1);
     row->setLayout(hlay);
-    vlay->addWidget(row, /*stretch*/0);
+    vlay->addWidget(row, 0);
 
     connect(m_sliceSlider, &QSlider::valueChanged,
             this, &MainWindow::onSliderValueChanged);
@@ -237,9 +230,6 @@ void MainWindow::setInitialSize()
     qDebug() << "[View] Initial size set to" << width() << "x" << height();
 }
 
-// ==============================
-// Events / Filters
-// ==============================
 bool MainWindow::eventFilter(QObject* obj, QEvent* ev)
 {
     if (obj == m_label && ev->type() == QEvent::Wheel) {
@@ -269,9 +259,6 @@ bool MainWindow::eventFilter(QObject* obj, QEvent* ev)
 }
 
 
-// ==============================
-// Metadata helpers
-// ==============================
 void MainWindow::setMetadata(const QStringList& lines)
 {
     if (!m_metaText) return;
@@ -309,7 +296,6 @@ void MainWindow::beginNewImageCycle()
 
 
 
-// ---- setImage refactored into small helpers ----
 bool MainWindow::validateImageInput(const cv::Mat& img) const
 {
     const bool ok = !img.empty();
@@ -390,9 +376,6 @@ void MainWindow::setImage(const cv::Mat& img8u)
 }
 
 
-// ==============================
-// Painting (refreshPixmap refactor)
-// ==============================
 bool MainWindow::beginRefreshGuard()
 {
     if (m_refreshing) {
@@ -493,9 +476,6 @@ void MainWindow::resizeEvent(QResizeEvent* ev)
     refreshPixmap();
 }
 
-// ==============================
-// Busy UI
-// ==============================
 void MainWindow::beginBusy(const QString& message)
 {
     ++m_busyNesting;
@@ -516,9 +496,6 @@ void MainWindow::endBusy()
     }
 }
 
-// ==============================
-// Slice slider API (controller-facing)
-// ==============================
 void MainWindow::enableSliceSlider(int nSlices)
 {
     if (!m_sliceSlider) return;
@@ -562,9 +539,6 @@ void MainWindow::onSliderValueChanged(int v)
     refreshPixmap();
 }
 
-// ==============================
-// Negative mode (controller sync)
-// ==============================
 void MainWindow::onNegativeModeChanged(bool on)
 {
     m_negativeMode = on;
@@ -577,9 +551,6 @@ void MainWindow::onNegativeModeChanged(bool on)
 }
 
 
-// ==============================
-// Drag & Drop (fileDropped)
-// ==============================
 bool MainWindow::isAcceptableUrl(const QUrl& url) const
 {
     if (!url.isLocalFile()) return false;
@@ -658,9 +629,6 @@ void MainWindow::dropEvent(QDropEvent* ev)
     ev->ignore();
 }
 
-// ==============================
-// Context menu (includes Histogram toggle)
-// ==============================
 void MainWindow::contextMenuEvent(QContextMenuEvent* ev)
 {
     const bool hasImg   = hasImageForMenu();
@@ -815,9 +783,6 @@ void MainWindow::applyContextSelection(QAction* chosen, const CtxMenuActions& ac
 }
 
 
-// ==============================
-// Save helpers (single)
-// ==============================
 bool MainWindow::promptSingleSave(QString* outPath, SaveFmt* outFmt)
 {
     const QString pics = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
@@ -889,9 +854,6 @@ void MainWindow::onSavePNG()
     emitSingleSave(path, fmt);
 }
 
-// ==============================
-// Save helpers (batch)
-// ==============================
 bool MainWindow::canBatchSave() const
 {
     if (!m_hasImage || m_img8.empty() || !m_sliceSlider) return false;
@@ -1088,9 +1050,6 @@ void MainWindow::onSaveBatch()
             QString("Writing MR series to %1 (N files)").arg(dir), 2500);
 }
 
-// ==============================
-// Drag hint
-// ==============================
 void MainWindow::showDragHint()
 {
     if (!m_label) return;
@@ -1109,9 +1068,6 @@ void MainWindow::clearDragHint()
     }
 }
 
-// ==============================
-// Overlay for slice index
-// ==============================
 void MainWindow::drawSliceOverlay(cv::Mat& img8)
 {
     if (img8.empty()) return;
@@ -1154,9 +1110,6 @@ void MainWindow::drawSliceOverlay(cv::Mat& img8)
              << "alpha=0.35";
 }
 
-// ==============================
-// About dialog
-// ==============================
 void MainWindow::showAboutDialog()
 {
     qDebug() << "[About][UI] showAboutDialog ENTER";
@@ -1184,22 +1137,18 @@ void MainWindow::addAboutDescription(QVBoxLayout* layout)
         return;
     }
 
-    const QString description =
-        "<p><b>Glimpse MRI</b> is a high-performance MRI viewing and reconstruction application crafted for efficiency "
-        "and designed to deliver powerful, reliable image handling. It supports <b>DICOM</b>, <b>ISMRMRD (HDF5)</b>, "
-        "and <b>fastMRI</b> datasets, and can both view and write MRI images.</p>"
+    static const char* kAboutHtml = R"(
+<p><b>Glimpse MRI</b> is a high-performance MRI viewing and reconstruction application crafted for efficiency and designed to deliver powerful, reliable image handling. It supports <b>DICOM</b>, <b>ISMRMRD (HDF5)</b>, and <b>fastMRI</b> datasets, and can both view and write MRI images.</p>
 
-        "<p>Developed using the <b>Model-View-Controller (MVC)</b> architecture, <b>Glimpse MRI</b> combines "
-        "<b>C++</b>, <b>CUDA</b>, and <b>Qt</b> for a clean, responsive interface while delegating compute-intensive work to a "
-        "<b>High-Performance Heterogeneous custom MRI Engine</b>.</p>"
+<p>Developed using the <b>Model-View-Controller (MVC)</b> architecture, <b>Glimpse MRI</b> combines <b>C++</b>, <b>CUDA</b>, and <b>Qt</b> for a clean, responsive interface while delegating compute-intensive work to a <b>High-Performance Heterogeneous custom MRI Engine</b>.</p>
 
-        "<p>The MRI engine targets modern CPUs and GPUs—with multi-threading via <b>OpenMP</b>, CPU-side Fourier transforms using "
-        "<b>FFTW (Fastest Fourier Transform in the West)</b>, and GPU acceleration through custom <b>CUDA</b> kernels, "
-        "<b>NVIDIA cuFFT</b>, and <b>NVIDIA cuBLAS</b>. "
-        "This heterogeneous pipeline enables fast reconstruction and smooth, real-time interaction on supported hardware.</p>"
+<p>The MRI engine targets modern CPUs and GPUs—with multi-threading via <b>OpenMP</b>, CPU-side Fourier transforms using <b>FFTW (Fastest Fourier Transform in the West)</b>, and GPU acceleration through custom <b>CUDA</b> kernels, <b>NVIDIA cuFFT</b>, and <b>NVIDIA cuBLAS</b>. This heterogeneous pipeline enables fast reconstruction and smooth, real-time interaction on supported hardware.</p>
 
-        "<p>Built and designed by Agustin Tortolero.</p>"
-        "<p><b>Source code</b>: <a href='https://github.com/agustinTortolero/glimpse_mri'>GitHub</a></p>";
+<p>Built and designed by Agustin Tortolero.</p>
+<p><b>Source code</b>: <a href='https://github.com/agustinTortolero/GlimpseMRI'>github.com/agustinTortolero/GlimpseMRI</a></p>
+)";
+
+    const QString description = QString::fromUtf8(kAboutHtml);
 
     auto* browser = new QTextBrowser();
     browser->setObjectName("aboutDescription");
@@ -1213,9 +1162,7 @@ void MainWindow::addAboutDescription(QVBoxLayout* layout)
     qDebug() << "[About][UI] addAboutDescription DONE widget=" << browser;
 }
 
-// ==============================
-// Controller → View: setHistogramImage
-// ==============================
+
 void MainWindow::setHistogramImage(const QImage& img, const QString& tooltip)
 {
     if (!m_histLabel) {
