@@ -1116,18 +1116,20 @@ void MainWindow::showAboutDialog()
 
     QDialog dlg(this);
     dlg.setWindowTitle("About Glimpse MRI");
-    auto* lay = new QVBoxLayout(&dlg);
+    auto* vbox = new QVBoxLayout(&dlg);
 
-    addAboutDescription(lay);
+    addAboutDescription(vbox);   // your text
+    addAboutBadges(vbox);        // badges go right below the text
 
     auto* bb = new QDialogButtonBox(QDialogButtonBox::Ok, &dlg);
     QObject::connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-    lay->addWidget(bb);
+    vbox->addWidget(bb);
 
     dlg.resize(560, 400);
     const int rc = dlg.exec();
     qDebug() << "[About][UI] showAboutDialog EXIT rc=" << rc;
 }
+
 
 void MainWindow::addAboutDescription(QVBoxLayout* layout)
 {
@@ -1178,4 +1180,73 @@ void MainWindow::setHistogramImage(const QImage& img, const QString& tooltip)
         m_histLabel->setToolTip(tooltip);
     qDebug() << "[View][Hist] setHistogramImage: applied pixmap"
              << " size=" << img.width() << "x" << img.height();
+}
+
+void MainWindow::addAboutBadges(QVBoxLayout* layout)
+{
+    qDebug() << "[About][UI] addAboutBadges ENTER layout?" << (layout ? "YES" : "NO");
+    if (!layout) {
+        qWarning() << "[About][UI][WRN] addAboutBadges called with null layout";
+        return;
+    }
+
+    auto* row = new QWidget(this);
+    auto* h   = new QHBoxLayout(row);
+    h->setContentsMargins(0,0,0,0);
+    h->setSpacing(16);
+
+    struct Logo { const char* res; const char* alt; double scale; };
+
+    // Order: C++ → NVIDIA → Qt → OpenCV → OpenMP (OpenMP scaled to 90%)
+    const Logo logos[] = {
+        {":/img/badges/Cpp_logo.png",    "C++",     1.00},
+        {":/img/badges/Nvidia_logo.png", "NVIDIA",  1.00},
+        {":/img/badges/Qt_logo.png",     "Qt",      1.00},
+        {":/img/badges/OpenCV_logo.png", "OpenCV",  1.00},
+        {":/img/badges/OpenMP_logo.png", "OpenMP",  0.90},  // -10%
+    };
+
+    const qreal dpr   = this->devicePixelRatioF();
+    const int   baseH = (dpr > 1.0) ? 28 : 24;
+    const int   targetH = int(std::lround(baseH * 1.5));  // your global +50%
+
+    qDebug() << "[About][Logo] dpr=" << dpr << " baseH=" << baseH << " targetH=" << targetH << "(before per-logo scale)";
+
+    auto addLogo = [&](const Logo& L){
+        const QString path = QString::fromUtf8(L.res);
+        const int thisH = std::max(1, int(std::lround(targetH * L.scale)));
+
+        qDebug() << "[About][Logo] loading" << L.alt << "path=" << path
+                 << " scale=" << L.scale << " thisH=" << thisH;
+
+        QPixmap pm;
+        const bool ok = pm.load(path);
+
+        auto* lbl = new QLabel(row);
+        lbl->setToolTip(QString::fromUtf8(L.alt));
+        lbl->setMinimumHeight(thisH);
+        lbl->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
+
+        if (!ok || pm.isNull()) {
+            qWarning() << "[About][Logo][WRN] missing badge resource:" << path;
+            lbl->setText(QString::fromUtf8(L.alt));
+            lbl->setStyleSheet("color: palette(mid);");
+        } else {
+            if (pm.height() != thisH) {
+                pm = pm.scaledToHeight(thisH, Qt::SmoothTransformation);
+            }
+            lbl->setPixmap(pm);
+        }
+
+        h->addWidget(lbl, 0, Qt::AlignVCenter);
+        qDebug() << "[About][Logo] added" << L.alt << " ok=" << ok << " finalH=" << thisH;
+    };
+
+    for (const auto& L : logos) addLogo(L);
+
+    row->setLayout(h);
+    layout->addWidget(row);
+
+    QStringList order; for (const auto& L : logos) order << L.alt;
+    qDebug() << "[About][UI] addAboutBadges DONE; order=" << order.join(" -> ");
 }

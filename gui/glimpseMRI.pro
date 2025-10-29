@@ -1,5 +1,3 @@
-# add fallback if no mri engine found and suchs
-
 
 
 # =========================
@@ -32,8 +30,8 @@ HEADERS += \
     src/image_utils.hpp \
     view/progress_splash.hpp
 
-RESOURCES += gui/assets/assets.qrc \
-    assets/assets.qrc
+RESOURCES += assets/assets.qrc
+
 
 
 # make headers in model/ visible to all sources

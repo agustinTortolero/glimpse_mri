@@ -198,4 +198,6 @@ private:
 
     void showAboutDialog();
     void addAboutDescription(QVBoxLayout* layout);
+    void addAboutBadges(QVBoxLayout* layout);
+
 };
