@@ -1,6 +1,19 @@
 // model/io.cpp
 #include "io.hpp"
 
+#include <QDebug>
+#include <QMap>
+#include <QVariantMap>
+#include <QString>
+#include <QByteArray>
+#include <cstdarg>  // for va_list / va_start / va_end
+#include <cstdio>   // for std::fprintf / std::vfprintf
+
+#include <dcmtk/dcmdata/dctk.h>       // DcmFileFormat, DcmDataset, find/get
+#include <dcmtk/dcmdata/dcdeftag.h>   // DCM_* tag keys
+
+
+
 #if defined(_MSC_VER) && defined(_DEBUG)
 #include <crtdbg.h>
 #endif
@@ -193,103 +206,100 @@ namespace {
 // - Falls back to IPP.z or 0.0 if tags missing.
 // ------------------------------------------------------------
 static bool dcmtk_series_key(const std::string& path,
-                             std::string& uid, int& inst, double& zproj)
+                             std::string& uid,
+                             int&         instanceNumber,
+                             double&      zproj)
 {
     std::cerr << "[DBG][DICOM][SERIES_KEY] ENTER path=" << path << "\n";
+
+    // Make sure codecs are registered (safe to call multiple times).
+    io::dcmtk_global_init();
+
     DcmFileFormat ff;
-    if (ff.loadFile(path.c_str()).bad()) {
-        std::cerr << "[DBG][DICOM][SERIES_KEY] loadFile failed\n";
+
+    // Cap max read length per element so DCMTK doesn’t try to slurp huge items.
+    const E_TransferSyntax readXfer = EXS_Unknown;
+    const E_GrpLenEncoding glenc    = EGL_noChange;
+    const Uint32           maxRead  = 64u * 1024u;   // 64 KB per element
+    const E_FileReadMode   mode     = ERM_autoDetect;
+
+    OFCondition st = ff.loadFile(path.c_str(), readXfer, glenc, maxRead, mode);
+    if (st.bad()) {
+        std::cerr << "[DBG][DICOM][SERIES_KEY] loadFile failed: " << st.text() << "\n";
         return false;
     }
     DcmDataset* ds = ff.getDataset();
-    if (!ds) { std::cerr << "[DBG][DICOM][SERIES_KEY] no dataset\n"; return false; }
-
-    OFString suid;
-    if (ds->findAndGetOFString(DCM_SeriesInstanceUID, suid).bad() || suid.empty()) {
-        std::cerr << "[DBG][DICOM][SERIES_KEY] missing SeriesInstanceUID\n";
+    if (!ds) {
+        std::cerr << "[DBG][DICOM][SERIES_KEY] no dataset\n";
         return false;
     }
-    uid = suid.c_str();
 
-    Sint32 instNum = 0;
-    if (ds->findAndGetSint32(DCM_InstanceNumber, instNum).good())
-        inst = static_cast<int>(instNum);
-    else
-        inst = 0;
-
-    // Defaults
-    zproj = 0.0;
-
-    // Parse IOP (6 values)
-    double r[3] = {0,0,0}, c[3] = {0,0,0};
-    bool haveIOP = false;
-    {
-        OFString iop;
-        if (ds->findAndGetOFStringArray(DCM_ImageOrientationPatient, iop).good()) {
-            std::string s = iop.c_str();
-            double v[6] = {0,0,0,0,0,0};
-            int k = 0; size_t start = 0;
-            while (k < 6) {
-                size_t p = s.find('\\', start);
-                std::string tok = s.substr(start, (p == std::string::npos) ? std::string::npos : p - start);
-                try { v[k++] = std::stod(tok); } catch (...) { v[k-1] = 0.0; }
-                if (p == std::string::npos) break;
-                start = p + 1;
-            }
-            if (k >= 6) {
-                r[0]=v[0]; r[1]=v[1]; r[2]=v[2];
-                c[0]=v[3]; c[1]=v[4]; c[2]=v[5];
-                haveIOP = true;
-            }
-        }
-    }
-
-    // Parse IPP (3 values)
-    double pnt[3] = {0,0,0};
-    bool haveIPP = false;
-    {
-        OFString ipp;
-        if (ds->findAndGetOFStringArray(DCM_ImagePositionPatient, ipp).good()) {
-            std::string s = ipp.c_str();
-            double v[3] = {0,0,0};
-            int k = 0; size_t start = 0;
-            while (k < 3) {
-                size_t p = s.find('\\', start);
-                std::string tok = s.substr(start, (p == std::string::npos) ? std::string::npos : p - start);
-                try { v[k++] = std::stod(tok); } catch (...) { v[k-1] = 0.0; }
-                if (p == std::string::npos) break;
-                start = p + 1;
-            }
-            if (k >= 3) {
-                pnt[0]=v[0]; pnt[1]=v[1]; pnt[2]=v[2];
-                haveIPP = true;
-            }
-        }
-    }
-
-    if (haveIOP && haveIPP) {
-        // normal = normalize(row × col)
-        double n[3] = {
-            r[1]*c[2] - r[2]*c[1],
-            r[2]*c[0] - r[0]*c[2],
-            r[0]*c[1] - r[1]*c[0]
-        };
-        double len = std::sqrt(n[0]*n[0] + n[1]*n[1] + n[2]*n[2]);
-        if (len > 0.0) { n[0]/=len; n[1]/=len; n[2]/=len; }
-        zproj = pnt[0]*n[0] + pnt[1]*n[1] + pnt[2]*n[2];
-        std::cerr << "[DBG][DICOM][SERIES_KEY] proj=dot(IPP,normal)=" << zproj
-                  << " inst=" << inst << "\n";
-    } else if (haveIPP) {
-        // fallback: use IPP.z as secondary key
-        zproj = pnt[2];
-        std::cerr << "[DBG][DICOM][SERIES_KEY] fallback proj=IPP.z=" << zproj
-                  << " inst=" << inst << "\n";
+    // --- SeriesInstanceUID ---
+    OFString sUID;
+    if (ds->findAndGetOFString(DCM_SeriesInstanceUID, sUID).good() && !sUID.empty()) {
+        uid = sUID.c_str();
     } else {
-        std::cerr << "[DBG][DICOM][SERIES_KEY] no IOP/IPP; proj=0 inst=" << inst << "\n";
+        std::cerr << "[DBG][DICOM][SERIES_KEY] missing SeriesInstanceUID\n";
+        return false; // without UID we can’t group into series
+    }
+
+    // --- InstanceNumber (fallback: -1) ---
+    Sint32 instTmp = -1;
+    if (ds->findAndGetSint32(DCM_InstanceNumber, instTmp).good()) {
+        instanceNumber = static_cast<int>(instTmp);
+    } else {
+        // Some files omit it; we keep -1 and rely on z sort.
+        instanceNumber = -1;
+        std::cerr << "[DBG][DICOM][SERIES_KEY] InstanceNumber not present\n";
+    }
+
+    // --- Z projection for sorting ---
+    // Prefer ImagePositionPatient (0020,0032) z component, fallback to SliceLocation (0020,1041).
+    zproj = 0.0;
+    OFString ippStr;
+    if (ds->findAndGetOFStringArray(DCM_ImagePositionPatient, ippStr).good() && !ippStr.empty()) {
+        // DICOM multi-values are "\" separated.
+        // Expect "x\y\z". We only need z.
+        std::string s = ippStr.c_str();
+        double xyz[3] = {0,0,0};
+        int idx = 0;
+        std::string cur;
+        for (char c : s) {
+            if (c == '\\') {
+                if (idx < 3) {
+                    try { xyz[idx] = std::stod(cur); } catch (...) {}
+                }
+                cur.clear();
+                ++idx;
+            } else {
+                cur.push_back(c);
+            }
+        }
+        if (idx <= 3) {
+            if (idx < 3) {
+                // last piece
+                try { xyz[idx] = std::stod(cur); } catch (...) {}
+            } else {
+                // already parsed three pieces; ignore tail
+            }
+        }
+        zproj = xyz[2];
+        std::cerr << "[DBG][DICOM][SERIES_KEY] z from ImagePositionPatient = " << zproj << "\n";
+    } else {
+        // Fallback: SliceLocation
+        double sl = 0.0;
+        if (ds->findAndGetFloat64(DCM_SliceLocation, sl).good()) {
+            zproj = sl;
+            std::cerr << "[DBG][DICOM][SERIES_KEY] z from SliceLocation = " << zproj << "\n";
+        } else {
+            // Last fallback: 0.0 (grouping still works via UID and instanceNumber).
+            std::cerr << "[DBG][DICOM][SERIES_KEY] no z info; default 0.0\n";
+            zproj = 0.0;
+        }
     }
 
     std::cerr << "[DBG][DICOM][SERIES_KEY] EXIT uid=" << uid
-              << " inst=" << inst << " proj=" << zproj << "\n";
+              << " inst=" << instanceNumber << " z=" << zproj << "\n";
     return true;
 }
 
@@ -962,128 +972,440 @@ bool read_dicom_frames_gray8(const std::string& pathOrDir,
 }
 
 
-// 16-bit frames API (declared in io.hpp)
-// Returns CV_16UC1 frames. If the file is actually 8-bit, we up-convert (×257).
-bool read_dicom_frames_u16(const std::string& path,
-                           std::vector<cv::Mat>& out16,
-                           std::string* why)
+bool io::read_dicom_frames_u16(const std::string& path,
+                               std::vector<cv::Mat>& out16,
+                               std::string* why)
 {
-    using std::cerr;
-    using std::endl;
+    out16.clear();
+    if (why) why->clear();
+
     std::error_code ec;
-    const fs::path p(path);
+    fs::path p(path);
+
+    if (!fs::exists(p, ec)) {
+        if (why) *why = "Path does not exist: " + path;
+        std::cerr << "[ERR][DICOM][IO] path not found: " << path << "\n";
+        return false;
+    }
+
+    auto decode_one_file_u16 = [&](const std::string& filePath) -> bool {
+        std::cerr << "[DBG][DICOM][IO] decode FILE (16-bit path): " << filePath << "\n";
+        io::dcmtk_global_init();
+
+        DicomImage di(filePath.c_str());
+        if (di.getStatus() != EIS_Normal) {
+            if (why) *why = "DicomImage status != normal";
+            std::cerr << "[ERR][DICOM][IO] DicomImage status != normal\n";
+            return false;
+        }
+
+        const int frames = static_cast<int>(di.getFrameCount());
+        const int rows   = static_cast<int>(di.getHeight());
+        const int cols   = static_cast<int>(di.getWidth());
+        if (rows <= 0 || cols <= 0) {
+            if (why) *why = "Invalid rows/cols";
+            std::cerr << "[ERR][DICOM][IO] invalid rows/cols: " << rows << "x" << cols << "\n";
+            return false;
+        }
+
+        std::cerr << "[DBG][DICOM][IO] dims=" << cols << "x" << rows
+                  << " frames=" << frames << "\n";
+
+        // Try to extract each frame in 16-bit. Fallback to 8-bit and up-convert if needed.
+        for (int f = 0; f < std::max(frames, 1); ++f) {
+            // --- try 16-bit directly ---
+            std::vector<uint16_t> buf16(static_cast<size_t>(rows) * static_cast<size_t>(cols));
+            bool ok16 = di.getOutputData(buf16.data(),
+                                         static_cast<unsigned long>(buf16.size() * sizeof(uint16_t)),
+                                         f, 16);
+            if (!ok16) {
+                std::cerr << "[WRN][DICOM][IO] getOutputData(16) failed on frame " << f
+                          << " -> trying 8-bit fallback\n";
+
+                std::vector<uint8_t> buf8(static_cast<size_t>(rows) * static_cast<size_t>(cols));
+                bool ok8 = di.getOutputData(buf8.data(),
+                                            static_cast<unsigned long>(buf8.size()),
+                                            f, 8);
+                if (!ok8) {
+                    if (why) *why = "Neither 16b nor 8b output available";
+                    std::cerr << "[ERR][DICOM][IO] getOutputData(8) also failed on frame " << f << "\n";
+                    return false;
+                }
+
+                // Up-convert 8-bit to 16-bit (simple left shift, preserves order).
+                for (size_t i = 0; i < buf16.size(); ++i) {
+                    buf16[i] = static_cast<uint16_t>(buf8[i]) << 8;
+                }
+            }
+
+            // Wrap into CV_16UC1 and PUSH (copy)
+            cv::Mat frame(rows, cols, CV_16UC1);
+            std::memcpy(frame.data, buf16.data(), buf16.size() * sizeof(uint16_t));
+            out16.emplace_back(std::move(frame));
+
+            std::cerr << "[DBG][DICOM][IO] frame " << f << " appended (16-bit)\n";
+        }
+
+        std::cerr << "[DBG][DICOM][IO] FILE EXIT ok=1 frames_appended=" << out16.size() << "\n";
+        return true;
+    };
 
     if (fs::is_regular_file(p, ec)) {
-        cerr << "[DBG][DICOM][IO] FILE (16-bit path): " << path << endl;
-        bool ok = false;
-        try {
-            ok = collect_series_from_seed_file_u16(path, out16, why);
-            cerr << "[DBG][DICOM][IO] FILE EXIT (16-bit) ok=" << ok
-                 << " frames=" << out16.size() << endl;
-        } catch (const std::exception& e) {
-            if (why) *why = e.what();
-            cerr << "[DBG][DICOM][IO][EXC] " << e.what() << endl;
-            ok = false;
-        } catch (...) {
-            if (why) *why = "unknown exception";
-            cerr << "[DBG][DICOM][IO][EXC] unknown" << endl;
-            ok = false;
-        }
+        // FAST PATH: decode just the file; do not try to aggregate the whole folder.
+        const bool ok = decode_one_file_u16(path);
+        if (!ok && why && why->empty()) *why = "Failed to decode DICOM file";
         return ok;
     }
 
-    if (!fs::is_directory(p, ec)) {
-        if (why) *why = "Path is neither file nor directory";
-        return false;
-    }
+    if (fs::is_directory(p, ec)) {
+        std::cerr << "[DBG][DICOM][IO] DIR (16-bit path): " << path << "\n";
 
-    // Directory: collect by UID (16-bit path)
-    std::string seed;
-    for (auto& e : fs::directory_iterator(p)) {
-        if (!e.is_regular_file(ec)) continue;
-        const auto ext = to_lower_copy(e.path().extension().string());
-        if (!(ext.empty() || ext == ".dcm" || ext == ".dicom" || ext == ".ima")) continue;
-        seed = e.path().string();
-        break;
-    }
-    if (seed.empty()) {
-        if (why) *why = "No DICOM files in directory";
-        return false;
-    }
+        struct Rec {
+            std::string uid;
+            double      z;
+            int         inst;
+            std::string file;
+        };
+        std::vector<Rec> recs;
 
-    std::string targetUID; int inst0=0; double z0=0.0;
-    if (!dcmtk_series_key(seed, targetUID, inst0, z0) || targetUID.empty()) {
-        if (why) *why = "Cannot read seed DICOM in directory";
-        return false;
-    }
-    std::cerr << "[DBG][DICOM][SERIES] (16-bit) seed UID=" << targetUID
-              << " dir=" << p.string() << std::endl;
+        // Pass 1: probe all DICOM-ish files in this directory (non-recursive).
+        size_t probed = 0, admitted = 0;
+        for (const auto& de : fs::directory_iterator(p, ec)) {
+            if (ec) break;
+            if (!de.is_regular_file()) continue;
 
-    std::vector<SeriesItem> items;
-    for (auto& e : fs::directory_iterator(p)) {
-        if (!e.is_regular_file(ec)) continue;
-        const std::string f = e.path().string();
-        const auto ext = to_lower_copy(e.path().extension().string());
-        if (!(ext.empty() || ext == ".dcm" || ext == ".dicom" || ext == ".ima")) continue;
+            const std::string fpath = de.path().string();
+            ++probed;
 
-        std::string uid2; int inst=0; double z=0.0;
-        if (!dcmtk_series_key(f, uid2, inst, z)) continue;
-        if (uid2 == targetUID) items.push_back({f, inst, z});
-    }
-
-    sort_series_items(items);
-    std::cerr << "[DBG][DICOM][SERIES] (16-bit) files in series: " << items.size() << std::endl;
-
-    out16.clear();
-    for (const auto& it : items) {
-        std::vector<cv::Mat> fr16;
-        if (!dcmtk_read_one_file_u16(it.path, fr16, why)) {
-            std::cerr << "[WRN][DICOM][SERIES] (16-bit) skip unreadable: " << it.path << std::endl;
-            continue;
+            std::string uid;
+            int inst = -1;
+            double z  = 0.0;
+            if (!dcmtk_series_key(fpath, uid, inst, z)) {
+                continue;
+            }
+            recs.push_back({uid, z, inst, fpath});
+            ++admitted;
         }
-        for (auto& m : fr16) out16.push_back(std::move(m));
-        std::cerr << "[DBG][DICOM][SERIES] (16-bit) appended " << fr16.size()
-                  << " from " << it.path << std::endl;
+        std::cerr << "[DBG][DICOM][IO] probed=" << probed << " admitted=" << admitted << "\n";
+        if (recs.empty()) {
+            if (why) *why = "No DICOM files admitted in directory";
+            return false;
+        }
+
+        // Group by UID and choose the largest series.
+        std::unordered_map<std::string, int> counts;
+        for (auto& r : recs) counts[r.uid]++;
+
+        std::string bestUID;
+        int bestCount = -1;
+        for (auto& kv : counts) {
+            if (kv.second > bestCount) { bestCount = kv.second; bestUID = kv.first; }
+        }
+        std::cerr << "[DBG][DICOM][IO] best series uid=" << bestUID << " count=" << bestCount << "\n";
+
+        // Filter to best UID and sort by (z, inst, path) for deterministic order.
+        std::vector<Rec> seq;
+        seq.reserve(static_cast<size_t>(bestCount));
+        for (auto& r : recs) if (r.uid == bestUID) seq.push_back(r);
+
+        std::sort(seq.begin(), seq.end(), [](const Rec& a, const Rec& b){
+            if (a.z != b.z)     return a.z < b.z;
+            if (a.inst != b.inst) return a.inst < b.inst;
+            return a.file < b.file;
+        });
+
+        std::cerr << "[DBG][DICOM][IO] decoding " << seq.size() << " file(s) for best series…\n";
+
+        // Pass 2: decode each file and append all frames found.
+        size_t before = out16.size();
+        for (size_t i = 0; i < seq.size(); ++i) {
+            std::cerr << "[DBG][DICOM][IO] [" << i+1 << "/" << seq.size() << "] " << seq[i].file << "\n";
+            if (!decode_one_file_u16(seq[i].file)) {
+                std::cerr << "[WRN][DICOM][IO] skipping file due to decode error\n";
+            }
+        }
+        size_t appended = out16.size() - before;
+        std::cerr << "[DBG][DICOM][IO] DIR EXIT frames_appended=" << appended << "\n";
+        return appended > 0;
     }
-    std::cerr << "[DBG][DICOM][SERIES] (16-bit) total frames=" << out16.size() << std::endl;
-    return !out16.empty();
+
+    if (why) *why = "Path is neither file nor directory";
+    std::cerr << "[ERR][DICOM][IO] not a file/dir: " << path << "\n";
+    return false;
 }
 
-// ---------------------------------
-// Minimal DICOM basic meta (only safe fields we know)
-// ---------------------------------
-bool read_dicom_basic_meta(const std::string& path, DicomMeta& out, std::string* why) {
-    DcmFileFormat ff;
-    OFCondition st = ff.loadFile(path.c_str());
-    if (st.bad()) {
-        if (why) *why = st.text();
-        return false;
-    }
-    DcmDataset* ds = ff.getDataset();
 
-    auto getS = [&](const DcmTagKey& k)->std::string {
-        OFString s; if (ds->findAndGetOFString(k, s).good()) return std::string(s.c_str());
-        return {};
+bool read_dicom_basic_meta(const std::string& path, DicomMeta& out, std::string* why)
+{
+    // ---------------------- local helpers ----------------------
+    auto setWhy = [&](const char* s){ if (why) *why = s ? s : ""; };
+
+    auto dbg = [&](const char* fmt, ...) {
+        va_list ap; va_start(ap, fmt);
+        std::fprintf(stderr, "[DBG][DICOM][META] ");
+        std::vfprintf(stderr, fmt, ap);
+        std::fprintf(stderr, "\n");
+        va_end(ap);
     };
 
-    // Populate a few common fields (match io.hpp)
-    out.patientName = getS(DCM_PatientName);
-    out.patientID   = getS(DCM_PatientID);
-    out.studyDate   = getS(DCM_StudyDate);
-    out.studyTime   = getS(DCM_StudyTime);
-    out.softwareVersions = getS(DCM_SoftwareVersions);
-    out.institutionName  = getS(DCM_InstitutionName);
-    out.seriesDescription= getS(DCM_SeriesDescription);
+    auto warn = [&](const char* fmt, ...) {
+        va_list ap; va_start(ap, fmt);
+        std::fprintf(stderr, "[WRN][DICOM][META] ");
+        std::vfprintf(stderr, fmt, ap);
+        std::fprintf(stderr, "\n");
+        va_end(ap);
+    };
 
-    // Optional timing if present
-    out.tr_ms = getS(DCM_RepetitionTime);
-    out.te_ms = getS(DCM_EchoTime);
-    out.ti_ms = getS(DCM_InversionTime);
+    auto errp = [&](const char* fmt, ...) {
+        va_list ap; va_start(ap, fmt);
+        std::fprintf(stderr, "[ERR][DICOM][META] ");
+        std::vfprintf(stderr, fmt, ap);
+        std::fprintf(stderr, "\n");
+        va_end(ap);
+    };
 
-    // Magnetic field strength (text)
-    out.B0T = getS(DCM_MagneticFieldStrength);
+    auto trim_ascii_inplace = [](std::string& s) {
+        auto is_ws = [](unsigned char c){ return c <= 0x20 || c == 0x7F; };
+        size_t a = 0, b = s.size();
+        while (a < b && is_ws(static_cast<unsigned char>(s[a]))) ++a;
+        while (b > a && is_ws(static_cast<unsigned char>(s[b-1]))) --b;
+        if (a != 0 || b != s.size()) s = s.substr(a, b - a);
+    };
 
-    return true;
+    auto first_multivalue = [](const std::string& s) {
+        const auto p = s.find('\\');
+        return (p == std::string::npos) ? s : s.substr(0, p);
+    };
+
+    auto normalize_dicom_time = [](std::string tm) {
+        if (tm.empty()) return tm;
+        std::string frac;
+        const auto dot = tm.find('.');
+        if (dot != std::string::npos) { frac = tm.substr(dot); tm = tm.substr(0, dot); }
+        while (tm.size() < 6) tm.push_back('0'); // HHMMSS
+        tm = tm.substr(0,2) + ":" + tm.substr(2,2) + ":" + tm.substr(4,2) + frac;
+        return tm;
+    };
+
+    auto is_valid_utf8 = [](const char* s, size_t n) -> bool {
+        size_t i = 0;
+        while (i < n) {
+            unsigned char c = static_cast<unsigned char>(s[i]);
+            if (c < 0x80) { ++i; continue; }
+            size_t need = (c & 0xE0) == 0xC0 ? 1 :
+                              (c & 0xF0) == 0xE0 ? 2 :
+                              (c & 0xF8) == 0xF0 ? 3 : 0;
+            if (!need || i + need >= n) return false;
+            if ((c & 0xF8) == 0xF8 || (c & 0xC0) == 0x80) return false;
+            for (size_t k = 1; k <= need; ++k) {
+                unsigned char cc = static_cast<unsigned char>(s[i+k]);
+                if ((cc & 0xC0) != 0x80) return false;
+            }
+            i += need + 1;
+        }
+        return true;
+    };
+
+    auto latin1_to_utf8 = [](const char* s, size_t n) -> std::string {
+        std::string out;
+        out.reserve(n * 2);
+        for (size_t i = 0; i < n; ++i) {
+            unsigned char c = static_cast<unsigned char>(s[i]);
+            if (c < 0x80) {
+                out.push_back(static_cast<char>(c));
+            } else {
+                out.push_back(static_cast<char>(0xC0 | (c >> 6)));
+                out.push_back(static_cast<char>(0x80 | (c & 0x3F)));
+            }
+        }
+        return out;
+    };
+
+    auto printable_preview = [&](const char* p, size_t n, size_t max_chars = 128) -> std::string {
+        std::string out;
+        if (!p || n == 0) return out;
+        size_t m = (n < max_chars) ? n : max_chars;
+        out.reserve(m);
+        for (size_t i = 0; i < m; ++i) {
+            unsigned char c = static_cast<unsigned char>(p[i]);
+            if (c >= 0x20 && c < 0x7F) out.push_back(static_cast<char>(c));
+            else                       out.push_back('.');
+        }
+        if (m < n) out += "...";
+        return out;
+    };
+
+    auto is_text_vr = [](DcmVR vr) -> bool {
+        switch (vr.getEVR()) {
+        case EVR_AE: case EVR_AS: case EVR_CS: case EVR_DA:
+        case EVR_DS: case EVR_DT: case EVR_IS: case EVR_LO:
+        case EVR_LT: case EVR_PN: case EVR_SH: case EVR_ST:
+        case EVR_TM: case EVR_UI: case EVR_UT:
+#ifdef EVR_UC
+        case EVR_UC:
+#endif
+            return true;
+        default: return false;
+        }
+    };
+
+    // Safe text fetch that uses findAndGetString (avoids getOFStringArray path)
+    auto fetch_text_utf8 = [&](DcmDataset* ds, const DcmTagKey& key, const char* name) -> std::string {
+        if (!ds) return {};
+        DcmElement* el = nullptr;
+        OFCondition st = ds->findAndGetElement(key, el);
+        if (st.bad() || !el) {
+            warn("%s: element not found", name ? name : "TAG");
+            return {};
+        }
+        const DcmTag& tag = el->getTag();
+        char tagStr[32];
+        std::snprintf(tagStr, sizeof(tagStr), "(%04X,%04X)",
+                      (unsigned)tag.getGroup(), (unsigned)tag.getElement());
+        DcmVR vr = el->getVR();
+        const char* vrName = vr.getVRName(); if (!vrName) vrName = "??";
+        const unsigned long vlen = el->getLength();
+
+        dbg("%s: tag=%s VR=%s len=%lu", name ? name : "TAG", tagStr, vrName, (unsigned long)vlen);
+
+        if (!is_text_vr(vr)) {
+            warn("%s: non-text VR; returning empty", name ? name : "TAG");
+            return {};
+        }
+
+        const char* p = nullptr;
+        st = ds->findAndGetString(key, p /*, searchIntoSub = OFFalse*/);
+        if (st.bad() || !p) {
+            dbg("%s: findAndGetString => %s; returning empty", name ? name : "TAG",
+                st.good() ? "null" : st.text());
+            return {};
+        }
+
+        // Safe copy with cap
+        size_t n = std::strlen(p);
+        const size_t CAP = 1u << 20; // 1 MiB
+        if (n > CAP) { warn("%s: value too large (%zu), capping to %zu", name, n, CAP); n = CAP; }
+
+        std::string s;
+        if (is_valid_utf8(p, n)) s.assign(p, p + n);
+        else                     s = latin1_to_utf8(p, n);
+        trim_ascii_inplace(s);
+        return s;
+    };
+
+    auto trim_trailing_zeros = [](std::string s) {
+        if (s.find('.') != std::string::npos) {
+            while (!s.empty() && s.back() == '0') s.pop_back();
+            if (!s.empty() && s.back() == '.')   s.pop_back();
+        }
+        return s;
+    };
+
+    auto get_number_as_string3 = [&](DcmDataset* ds, const DcmTagKey& key, const char* name) -> std::string {
+        if (!ds) return {};
+        Float64 f = 0.0;
+        if (ds->findAndGetFloat64(key, f).good()) {
+            char buf[64]; std::snprintf(buf, sizeof(buf), "%.3f", static_cast<double>(f));
+            std::string r(buf); return trim_trailing_zeros(r);
+        }
+        std::string s = first_multivalue(fetch_text_utf8(ds, key, name));
+        trim_ascii_inplace(s);
+        return s;
+    };
+    // -----------------------------------------------------------
+
+    std::fprintf(stderr, "[DBG][DICOM][META] ENTER path=%s\n", path.c_str());
+    out = {};
+
+    try {
+        DcmFileFormat ff;
+        const E_TransferSyntax readXfer = EXS_Unknown;
+        const E_GrpLenEncoding glenc    = EGL_noChange;
+        const Uint32           maxRead  = 64u * 1024u;    // cap per element
+        const E_FileReadMode   mode     = ERM_autoDetect;
+
+        dbg("loadFile(...) begin (cap=%u bytes/element)", (unsigned)maxRead);
+        OFCondition st = ff.loadFile(path.c_str(), readXfer, glenc, maxRead, mode);
+        if (st.bad()) {
+            setWhy(st.text());
+            errp("loadFile failed: %s", st.text());
+            std::fprintf(stderr, "[DBG][DICOM][META] EXIT (fail)\n");
+            return false;
+        }
+        dbg("loadFile(...) ok");
+
+        DcmDataset* ds = ff.getDataset();
+        if (!ds) {
+            setWhy("No dataset");
+            errp("null dataset");
+            std::fprintf(stderr, "[DBG][DICOM][META] EXIT (fail)\n");
+            return false;
+        }
+
+        // -------- TEXT TAGS (with safe path) --------
+        dbg("TAG: Manufacturer...");
+        out.manufacturer = fetch_text_utf8(ds, DCM_Manufacturer, "Manufacturer");
+        dbg("  ok: '%s'", printable_preview(out.manufacturer.c_str(), out.manufacturer.size()).c_str());
+
+        dbg("TAG: Model...");
+        out.modelName = fetch_text_utf8(ds, DCM_ManufacturerModelName, "ModelName");
+        dbg("  ok: '%s'", printable_preview(out.modelName.c_str(), out.modelName.size()).c_str());
+
+        dbg("TAG: StudyDate...");
+        out.studyDate = fetch_text_utf8(ds, DCM_StudyDate, "StudyDate");
+        dbg("  ok: '%s'", printable_preview(out.studyDate.c_str(), out.studyDate.size()).c_str());
+
+        dbg("TAG: StudyTime...");
+        {
+            std::string rawST = fetch_text_utf8(ds, DCM_StudyTime, "StudyTime");
+            out.studyTime = normalize_dicom_time(first_multivalue(rawST));
+            dbg("  ok: '%s'", printable_preview(out.studyTime.c_str(), out.studyTime.size()).c_str());
+        }
+
+        // -------- NUMERIC-ISH TAGS --------
+        dbg("TAG: B0T...");
+        out.B0T = get_number_as_string3(ds, DCM_MagneticFieldStrength, "MagneticFieldStrength");
+        dbg("  ok: '%s'", printable_preview(out.B0T.c_str(), out.B0T.size()).c_str());
+
+        dbg("TAG: TR...");
+        out.tr_ms = get_number_as_string3(ds, DCM_RepetitionTime, "RepetitionTime");
+        dbg("  ok: '%s'", printable_preview(out.tr_ms.c_str(), out.tr_ms.size()).c_str());
+
+        dbg("TAG: TE...");
+        out.te_ms = get_number_as_string3(ds, DCM_EchoTime, "EchoTime");
+        dbg("  ok: '%s'", printable_preview(out.te_ms.c_str(), out.te_ms.size()).c_str());
+
+        dbg("TAG: TI...");
+        out.ti_ms = get_number_as_string3(ds, DCM_InversionTime, "InversionTime");
+        dbg("  ok: '%s'", printable_preview(out.ti_ms.c_str(), out.ti_ms.size()).c_str());
+
+        // -------- Summary --------
+        std::fprintf(stderr,
+                     "[DBG][DICOM][META] OK Manuf='%s' Model='%s' Date='%s' Time='%s' "
+                     "B0(T)='%s' TR(ms)='%s' TE(ms)='%s' TI(ms)='%s'\n",
+                     printable_preview(out.manufacturer.c_str(), out.manufacturer.size(), 64).c_str(),
+                     printable_preview(out.modelName.c_str(),    out.modelName.size(),    64).c_str(),
+                     printable_preview(out.studyDate.c_str(),    out.studyDate.size(),    32).c_str(),
+                     printable_preview(out.studyTime.c_str(),    out.studyTime.size(),    32).c_str(),
+                     printable_preview(out.B0T.c_str(),          out.B0T.size(),          32).c_str(),
+                     printable_preview(out.tr_ms.c_str(),        out.tr_ms.size(),        32).c_str(),
+                     printable_preview(out.te_ms.c_str(),        out.te_ms.size(),        32).c_str(),
+                     printable_preview(out.ti_ms.c_str(),        out.ti_ms.size(),        32).c_str());
+
+        std::fprintf(stderr, "[DBG][DICOM][META] EXIT (ok)\n");
+        return true;
+    }
+    catch (const std::exception& ex) {
+        setWhy(ex.what());
+        errp("EXC: %s", ex.what());
+    }
+    catch (...) {
+        setWhy("Unknown exception in read_dicom_basic_meta");
+        errp("EXC: unknown");
+    }
+
+    std::fprintf(stderr, "[DBG][DICOM][META] EXIT (fail)\n");
+    return false;
 }
 
 // ---------------------------------
@@ -1266,5 +1588,191 @@ bool write_dicom_sc_gray8(const std::string& outPath, const cv::Mat& imgIn, std:
               << "' size=" << cols << "x" << rows << "\n";
     return true;
 }
+
+bool logDicomMetaBrief(const QString& path)
+{
+    qDebug().noquote() << "[DBG][DICOM][META] ENTER path=" << path;
+
+    DcmFileFormat file;
+    const QByteArray pathBytes = path.toUtf8();
+    const OFCondition st = file.loadFile(pathBytes.constData());
+    if (st.bad()) {
+        qWarning().noquote() << "[WRN][DICOM][META] loadFile failed:" << st.text();
+        return false;
+    }
+
+    // Keep dataset alive by keeping 'file' in-scope.
+    DcmDataset& ds = *file.getDataset();
+
+    // --- Read SpecificCharacterSet once (ASCII tokens like "ISO_IR 100\ISO_IR 192") ---
+    OFString csOF;
+    (void)ds.findAndGetOFStringArray(DCM_SpecificCharacterSet, csOF);
+    const QString csRaw = QString::fromLatin1(csOF.c_str(), static_cast<int>(csOF.size()));
+    const QStringList csVals = csRaw.split('\\', Qt::SkipEmptyParts);
+
+    // --- Helpers (local) ---
+    auto decodeWithCS = [&](const OFString& s) -> QString {
+        const QByteArray ba(s.c_str(), static_cast<int>(s.size()));
+        auto tryUtf8   = [&](){ return QString::fromUtf8(ba);    };
+        auto tryLatin1 = [&](){ return QString::fromLatin1(ba);  };
+
+        bool preferLatin1 = false;
+        bool preferUtf8   = false;
+        for (const QString& v0 : csVals) {
+            const QString v = v0.trimmed();
+            if (v == QLatin1String("ISO_IR 192")) preferUtf8 = true; // UTF-8
+            // Common single-byte sets that map well to Latin-1 fallback:
+            if (v == QLatin1String("ISO_IR 100") || // Latin-1
+                v == QLatin1String("ISO_IR 101") || // Latin-2
+                v == QLatin1String("ISO_IR 109") || // Latin-3
+                v == QLatin1String("ISO_IR 110") || // Latin-4
+                v == QLatin1String("ISO_IR 148"))   // Latin-5
+                preferLatin1 = true;
+        }
+
+        QString out = preferLatin1 ? tryLatin1()
+                      : preferUtf8   ? tryUtf8()
+                                   : tryUtf8(); // default attempt
+
+        // Fallback if bytes weren’t actually valid UTF-8
+        if (out.contains(QChar::ReplacementCharacter))
+            out = tryLatin1();
+
+        return out.trimmed();
+    };
+
+    auto getStr = [&](const DcmTagKey& key) -> QString {
+        OFString v;
+        if (ds.findAndGetOFStringArray(key, v).good())
+            return decodeWithCS(v);
+        return {};
+    };
+
+    auto getUInt = [&](const DcmTagKey& key, quint32& out) -> bool {
+        // Prefer native integer accessors when the VR is US/UL.
+        Uint16 u16 = 0;
+        if (ds.findAndGetUint16(key, u16).good()) { out = static_cast<quint32>(u16); return true; }
+        Uint32 u32 = 0;
+        if (ds.findAndGetUint32(key, u32).good()) { out = static_cast<quint32>(u32); return true; }
+        Sint32 s32 = 0;
+        if (ds.findAndGetSint32(key, s32).good() && s32 >= 0) { out = static_cast<quint32>(s32); return true; }
+        // Many numeric-ish tags (e.g. NumberOfFrames) are IS/DS strings:
+        const QString as = getStr(key);
+        bool ok = false; const quint32 tmp = as.toUInt(&ok);
+        if (ok) { out = tmp; return true; }
+        return false;
+    };
+
+    auto logField = [&](const char* name, const QString& v) {
+        qDebug().noquote() << "[DBG][DICOM][META]" << name << "="
+                           << (v.isEmpty() ? "<empty>" : v);
+    };
+
+    auto logUInt = [&](const char* name, const DcmTagKey& key) {
+        quint32 n = 0;
+        if (getUInt(key, n))
+            qDebug().noquote() << "[DBG][DICOM][META]" << name << "=" << n;
+        else
+            qDebug().noquote() << "[DBG][DICOM][META]" << name << "= <n/a>";
+    };
+
+    // --- Read & log safe, human-useful fields only (avoid sequences/binary) ---
+    const QString specificCS   = csRaw; // already decoded as ASCII above
+    const QString manuf        = getStr(DCM_Manufacturer);
+    const QString model        = getStr(DCM_ManufacturerModelName);
+    const QString swVersions   = getStr(DCM_SoftwareVersions);
+
+    const QString patientName  = getStr(DCM_PatientName);
+    const QString patientID    = getStr(DCM_PatientID);
+    const QString modality     = getStr(DCM_Modality);
+    const QString studyDesc    = getStr(DCM_StudyDescription);
+    const QString seriesDesc   = getStr(DCM_SeriesDescription);
+
+    quint32 rows = 0, cols = 0, frames = 0;
+    (void)getUInt(DCM_Rows, rows);
+    (void)getUInt(DCM_Columns, cols);
+    (void)getUInt(DCM_NumberOfFrames, frames);
+
+    logField("SpecificCharacterSet(0008,0005)", specificCS);
+    logField("Manufacturer",                    manuf);
+    logField("ModelName",                       model);
+    logField("SoftwareVersions",                swVersions);
+
+    logField("PatientName",                     patientName);
+    logField("PatientID",                       patientID);
+    logField("Modality",                        modality);
+    logField("StudyDescription",                studyDesc);
+    logField("SeriesDescription",               seriesDesc);
+
+    qDebug().noquote() << "[DBG][DICOM][META] Rows=" << rows
+                       << " Columns=" << cols
+                       << " Frames=" << (frames ? QString::number(frames) : QString("<n/a>"));
+
+    qDebug().noquote() << "[QT][DBG][CTRL][loadDicom][META] EXIT";
+    return true;
+}
+
+
+QVariantMap readDicomMetaMinimal(const QString& path)
+{
+    QVariantMap out;
+    out.insert("path", path);
+
+    DcmFileFormat file;
+    const QByteArray pathBytes = path.toUtf8();
+    const OFCondition st = file.loadFile(pathBytes.constData());
+    if (st.bad()) {
+        out.insert("error", QString::fromLatin1(st.text()));
+        return out;
+    }
+
+    DcmDataset& ds = *file.getDataset();
+
+    // --- Helpers (local) ---
+    auto ofToQString = [](const OFString& s) -> QString {
+        const QByteArray ba(s.c_str(), static_cast<int>(s.size()));
+        QString out = QString::fromUtf8(ba);
+        if (out.contains(QChar::ReplacementCharacter))
+            out = QString::fromLatin1(ba);
+        return out.trimmed();
+    };
+
+    auto getStr = [&](const DcmTagKey& key) -> QString {
+        OFString v;
+        if (ds.findAndGetOFStringArray(key, v).good())
+            return ofToQString(v);
+        return {};
+    };
+
+    auto getUInt = [&](const DcmTagKey& key) -> QVariant {
+        Uint32 u = 0;
+        if (ds.findAndGetUint32(key, u).good()) return QVariant::fromValue<quint32>(u);
+        Sint32 s = 0;
+        if (ds.findAndGetSint32(key, s).good() && s >= 0) return QVariant::fromValue<quint32>(s);
+        const QString as = getStr(key);
+        bool ok = false; const uint val = as.toUInt(&ok);
+        return ok ? QVariant::fromValue<quint32>(val) : QVariant{};
+    };
+
+    // --- Populate map with known-good fields ---
+    out.insert("SpecificCharacterSet", getStr(DCM_SpecificCharacterSet));
+    out.insert("Manufacturer",         getStr(DCM_Manufacturer));
+    out.insert("ModelName",            getStr(DCM_ManufacturerModelName));
+    out.insert("SoftwareVersions",     getStr(DCM_SoftwareVersions));
+
+    out.insert("PatientName",          getStr(DCM_PatientName));
+    out.insert("PatientID",            getStr(DCM_PatientID));
+    out.insert("Modality",             getStr(DCM_Modality));
+    out.insert("StudyDescription",     getStr(DCM_StudyDescription));
+    out.insert("SeriesDescription",    getStr(DCM_SeriesDescription));
+
+    out.insert("Rows",                 getUInt(DCM_Rows));
+    out.insert("Columns",              getUInt(DCM_Columns));
+    out.insert("NumberOfFrames",       getUInt(DCM_NumberOfFrames));
+
+    return out;
+}
+
+
 
 } // namespace io

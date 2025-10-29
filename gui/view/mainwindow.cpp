@@ -345,12 +345,17 @@ void MainWindow::storeImage(const cv::Mat& m)
 void MainWindow::updateMetadataForImage(const cv::Mat& m)
 {
     if (!m_metaText) return;
+
     double minv = 0.0, maxv = 0.0;
     cv::minMaxLoc(m, &minv, &maxv);
-    const QString ts = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss");
-    appendMetadataLine(QString("[View] %1 | Image %2x%3 | min=%4 max=%5")
-                           .arg(ts).arg(m.cols).arg(m.rows)
-                           .arg(minv, 0, 'f', 3).arg(maxv, 0, 'f', 3));
+
+    const QString line = QString("Image %1x%2 | min=%3 max=%4")
+                             .arg(m.cols)
+                             .arg(m.rows)
+                             .arg(minv, 0, 'f', 3)
+                             .arg(maxv, 0, 'f', 3);
+
+    appendMetadataLine(line);
 }
 
 void MainWindow::repaintOnce()

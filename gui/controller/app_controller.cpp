@@ -17,6 +17,7 @@
 #include <QCoreApplication>
 #include <QFileInfo>
 #include <QEventLoop>
+#include <QTimer>
 
 #include "../view/mainwindow.hpp"
 #include "../model/io.hpp"
@@ -25,6 +26,7 @@
 #include "../view/progress_splash.hpp"
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
+
 
 // =====================================================================
 // AppController
@@ -206,7 +208,6 @@ void AppController::load(const QString& pathQ)
 
         clearLoadState();
         m_meta << ("Source: " + pathQ);
-        m_meta << ("When: " + QDateTime::currentDateTime().toString(Qt::ISODate));
 
         // Probe
         std::string dbg;
@@ -216,15 +217,16 @@ void AppController::load(const QString& pathQ)
         qDebug() << "[CTRL][LOAD] probe took" << tProbe.elapsed() << "ms";
 
         if (m_probe.flavor == io::Flavor::DICOM) {
-            qDebug() << "[CTRL][LOAD] DICOM path -> load_dicom";
+            qDebug() << "[CTRL][LOAD] DICOM path -> loadDicom";
             QElapsedTimer t; t.start();
-            const bool ok = load_dicom(pathQ.toStdString());
-            qDebug() << "[CTRL][LOAD] load_dicom ok=" << ok << " ms=" << t.elapsed();
+            const bool ok = this->loadDicom(pathQ);
+            qDebug() << "[CTRL][LOAD] loadDicom ok=" << ok << " ms=" << t.elapsed();
+
             if (!ok) {
                 qWarning() << "[CTRL][LOAD] DICOM not admitted -> prepare_fallback";
-                // m_meta was filled with the reason inside load_dicom()
+                // Note: loadDicom already logs detailed reasons (from io::*)
                 prepare_fallback();
-                anyWorkToShow = true;  // we’ll show the fallback
+                anyWorkToShow = true;   // we’ll show the fallback frame
             } else {
                 anyWorkToShow = true;
             }
@@ -253,161 +255,6 @@ void AppController::load(const QString& pathQ)
     qDebug() << "[CTRL][LOAD] exit";
 }
 
-
-bool AppController::load_dicom(const std::string& path)
-{
-    qDebug() << "[DICOM][CTRL] load_dicom(enter) path=" << QString::fromStdString(path);
-
-    // Reset view state early so the UI looks responsive
-    if (m_view) {
-        m_view->beginNewImageCycle();
-        m_view->enableSliceSlider(0); // will be re-enabled after load
-    }
-
-    if (!m_dicom) m_dicom = std::make_unique<DicomDll>();
-    if (!m_dicom->load()) {
-        qWarning() << "[DICOM][CTRL][ERR] dicom__io_lib.dll not loaded";
-        m_meta << "DICOM: loader not available (DLL missing)";
-        return false;
-    }
-
-    // ---- INFO gate (admission policy) ----
-    int frames=0, W=0, H=0, mono=0, spp=0, bits=0;
-    {
-        QElapsedTimer t; t.start();
-        const bool okInfo = m_dicom->info(path, &frames, &W, &H, &mono, &spp, &bits);
-        qDebug() << "[DICOM][CTRL] info() ok=" << okInfo
-                 << " dims=" << W << "x" << H
-                 << " frames=" << frames
-                 << " mono=" << mono
-                 << " spp=" << spp
-                 << " bits=" << bits
-                 << " ms=" << t.elapsed();
-
-        if (!okInfo) {
-            m_meta << "Format: DICOM (not admitted)"
-                   << "Reason: could not read basic DICOM info (unsupported or corrupted)";
-            return false;
-        }
-    }
-
-    // Admission checks (clarity > perf)
-    bool admitted = true;
-    QStringList reasons;
-
-    if (W <= 0 || H <= 0 || frames <= 0) {
-        admitted = false; reasons << "invalid dimensions or zero frames";
-    }
-    if (mono != 1) {
-        admitted = false; reasons << "requires MONOCHROME (Photometric MONOCHROME1/2)";
-    }
-    if (spp != 1) {
-        admitted = false; reasons << "requires SamplesPerPixel=1";
-    }
-    if (!(bits == 8 || bits == 16)) {
-        admitted = false; reasons << "requires BitsAllocated of 8 or 16";
-    }
-
-    // Memory sanity (avoid gigantic stacks)
-    {
-        const size_t plane = size_t(W) * size_t(H);
-        const size_t bytes = plane * size_t(frames);
-        const size_t kMaxStackBytes = 1024ull * 1024ull * 1024ull; // 1 GiB
-        if (bytes == 0 || bytes > kMaxStackBytes) {
-            admitted = false;
-            reasons << QString("stack too large or zero (%1 bytes)").arg(qulonglong(bytes));
-        }
-    }
-
-    if (!admitted) {
-        qWarning() << "[DICOM][CTRL] NOT ADMITTED ->" << reasons.join("; ");
-        m_meta.clear();
-        m_meta << "Format: DICOM (not admitted)"
-               << QString("Dims: %1x%2, Frames=%3").arg(W).arg(H).arg(frames)
-               << QString("Mono=%1, SPP=%2, Bits=%3").arg(mono).arg(spp).arg(bits)
-               << ("Reason: " + reasons.join("; "));
-        return false; // caller will show graceful fallback
-    }
-
-    // ---- Read-all path (we only admit what we can show) ----
-    QElapsedTimer t; t.start();
-    uint8_t* stack = nullptr;
-    int outW = 0, outH = 0, outS = 0;
-
-    qDebug() << "[DICOM][CTRL] calling DLL->read_all_gray8...";
-    if (!m_dicom->read_all_gray8(path, &stack, &outW, &outH, &outS) || !stack) {
-        qWarning() << "[DICOM][CTRL][ERR] read_all_gray8 failed";
-        m_meta.clear();
-        m_meta << "Format: DICOM (not admitted)"
-               << "Reason: failed to extract 8-bit frames for display";
-        if (m_view) { m_view->beginNewImageCycle(); m_view->enableSliceSlider(0); }
-        return false;
-    }
-    qDebug() << "[DICOM][CTRL] AFTER DLL read-all"
-             << "W=" << outW << "H=" << outH
-             << "S=" << outS << " ms=" << t.elapsed();
-
-    // Split stack → cv::Mat frames (deep copies)
-    std::vector<cv::Mat> framesU8;
-    framesU8.reserve(std::max(outS, 0));
-    const size_t plane = static_cast<size_t>(outW) * static_cast<size_t>(outH);
-
-    auto checksum16 = [&](const uint8_t* src)->qulonglong {
-        if (!src || plane == 0) return 0;
-        size_t step = plane / 16 + 1; // clarity over perf
-        qulonglong cs = 0;
-        for (size_t i = 0; i < plane; i += step) cs += src[i];
-        return cs;
-    };
-
-    for (int f = 0; f < outS; ++f) {
-        const uint8_t* src = stack + plane * static_cast<size_t>(f);
-        const qulonglong cs = checksum16(src);
-        qDebug() << "[DICOM][CTRL] slice" << f << "checksum=" << cs;
-
-        cv::Mat u8(outH, outW, CV_8UC1, const_cast<uint8_t*>(src));
-        framesU8.emplace_back(u8.clone());     // own copy
-    }
-
-    // Release DLL buffer
-    m_dicom->free_buf(stack);
-    stack = nullptr;
-
-    if (framesU8.empty()) {
-        qWarning() << "[DICOM][CTRL] no frames after split";
-        m_meta.clear();
-        m_meta << "Format: DICOM (not admitted)"
-               << "Reason: empty frame stack after read";
-        if (m_view) { m_view->beginNewImageCycle(); m_view->enableSliceSlider(0); }
-        return false;
-    }
-
-    // ---- Display path (single vs stack) ----
-    if (framesU8.size() >= 2) {
-        qDebug() << "[DICOM][CTRL] multi-slice S=" << int(framesU8.size())
-        << " dims=" << outW << "x" << outH;
-        showSlices(framesU8);
-        m_meta.clear();
-        m_meta << "Format: DICOM (admitted)"
-               << QString("Dims: %1x%2, Frames=%3").arg(outW).arg(outH).arg(framesU8.size())
-               << "Photometric: MONOCHROME (SPP=1)"
-               << QString("BitsAllocated (src): %1").arg(bits);
-    } else {
-        qDebug() << "[DICOM][CTRL] single frame dims=" << outW << "x" << outH;
-        m_meta.clear();
-        m_meta << "Format: DICOM (admitted)"
-               << QString("Dims: %1x%2").arg(outW).arg(outH)
-               << "Photometric: MONOCHROME (SPP=1)"
-               << QString("BitsAllocated (src): %1").arg(bits);
-        m_display8 = framesU8[0].clone();
-        if (m_view) {
-            m_view->setMetadata(m_meta);
-            m_view->enableSliceSlider(0);
-            m_view->setImage(m_display8);
-        }
-    }
-    return true;
-}
 
 
 // HDF5/ISMRMRD reconstruction via engine DLL with Splash progress
@@ -1054,4 +901,268 @@ void AppController::postSplashUpdateFromEngineThread(int pct, const QString& sta
 
     // If engine is called synchronously on GUI thread, allow paints
     QCoreApplication::processEvents(QEventLoop::AllEvents, 8);
+}
+
+
+#include <chrono>          // std::chrono::milliseconds
+#include <QApplication>    // qApp
+#include <QMetaObject>     // invokeMethod
+
+
+
+#ifndef GLIMPSE_META_DEFER
+#define GLIMPSE_META_DEFER 1   // 1 = defer meta to next event loop tick; 0 = sync
+#endif
+
+bool AppController::loadDicom(const QString& pathUtf8)
+{
+    qDebug() << "[CTRL][loadDicom] ENTER path=" << pathUtf8;
+    const std::string path = pathUtf8.toStdString();
+    std::string why;
+
+    // ---------------- 1) Decode ----------------
+    qDebug() << "[CTRL][loadDicom] calling io::read_dicom_frames_u16…";
+    std::vector<cv::Mat> frames16;
+    const bool ok16 = io::read_dicom_frames_u16(path, frames16, &why);
+
+    std::vector<cv::Mat> frames8;  // what we will adopt into the UI
+
+    if (ok16 && !frames16.empty()) {
+        qDebug() << "[CTRL][loadDicom] decoded" << int(frames16.size())
+        << "frame(s) as 16-bit; converting to 8-bit…";
+
+        frames8.reserve(frames16.size());
+        for (size_t i = 0; i < frames16.size(); ++i) {
+            const cv::Mat& f16 = frames16[i];
+            if (f16.empty()) {
+                qWarning() << "[CTRL][loadDicom][WRN] empty 16-bit frame at idx" << int(i);
+                continue;
+            }
+
+            double mn = 0.0, mx = 0.0;
+            cv::minMaxLoc(f16, &mn, &mx);
+            if (mx <= mn) mx = mn + 1.0;  // avoid div/0
+
+            cv::Mat f32, u8;
+            f16.convertTo(f32, CV_32F);
+            f32 = (f32 - float(mn)) / float(mx - mn);
+            f32.convertTo(u8, CV_8U, 255.0);
+
+            frames8.emplace_back(u8.clone());
+
+            if (i < 3) {
+                qDebug() << "[CTRL][loadDicom][DBG] f" << int(i)
+                << "min=" << mn << "max=" << mx
+                << "size=" << u8.cols << "x" << u8.rows
+                << "type=" << u8.type();
+            }
+        }
+        qDebug() << "[CTRL][loadDicom] 16→8 conversion done; frames8=" << int(frames8.size());
+    } else {
+        qWarning() << "[CTRL][loadDicom][WRN] 16-bit path failed:"
+                   << QString::fromStdString(why) << "-> trying 8-bit fallback";
+        why.clear();
+
+        std::vector<cv::Mat> frames8_raw;
+        if (!io::read_dicom_frames_gray8(path, frames8_raw, &why) || frames8_raw.empty()) {
+            qCritical() << "[CTRL][loadDicom][ERR] All decode attempts failed:"
+                        << QString::fromStdString(why);
+            qDebug() << "[CTRL][loadDicom] EXIT fail";
+            return false;
+        }
+
+        qDebug() << "[CTRL][loadDicom] decoded" << int(frames8_raw.size()) << "frame(s) as 8-bit";
+        frames8.reserve(frames8_raw.size());
+        for (size_t i = 0; i < frames8_raw.size(); ++i) {
+            const cv::Mat& f = frames8_raw[i];
+            if (f.empty()) continue;
+
+            if (f.type() == CV_8UC1) {
+                frames8.emplace_back(f.clone());
+            } else {
+                cv::Mat g;
+                if (f.channels() == 3) cv::cvtColor(f, g, cv::COLOR_BGR2GRAY);
+                else                    f.convertTo(g, CV_8U);
+                frames8.emplace_back(g.clone());
+            }
+        }
+    }
+
+    if (frames8.empty()) {
+        qWarning() << "[CTRL][loadDicom][WRN] frames8 empty after decode/convert";
+        qDebug() << "[CTRL][loadDicom] EXIT fail";
+        return false;
+    }
+
+    // ---------------- 2) Adopt into controller state & show ----------------
+    m_slices8_base = frames8;                  // base copy (used by FX toggles like negative)
+    m_slices8      = m_slices8_base;           // active working stack
+    m_currentSlice = 0;
+    m_display8     = m_slices8.front().clone();
+    m_lastImg8     = m_display8.clone();
+
+    qDebug() << "[CTRL][loadDicom] adopting stack: S=" << int(m_slices8.size())
+             << " W=" << m_display8.cols << " H=" << m_display8.rows;
+
+    if (m_view) {
+        m_view->enableSliceSlider(int(m_slices8.size()));  // enables & sets visibility
+        m_view->setSliceIndex(0);
+        m_view->setImage(m_display8);
+    } else {
+        qWarning() << "[CTRL][loadDicom][WRN] m_view is null; cannot display";
+    }
+
+    // If negative mode had been ON, re-apply (defensive)
+    if (m_negativeMode) {
+        qDebug() << "[CTRL][loadDicom][FX] re-applying negative mode";
+        applyNegative();
+    }
+
+    // ---------------- 3) Metadata (sync or deferred) ----------------
+    {
+        auto task = [ctrl=this, path]() noexcept {
+            try {
+                qDebug() << "[CTRL][loadDicom][META] ENTER (" << (GLIMPSE_META_DEFER ? "deferred" : "sync") << ")";
+                std::string why2;
+                io::DicomMeta meta{};
+                const bool ok = io::read_dicom_basic_meta(path, meta, &why2);
+                if (!ok) {
+                    qWarning() << "[CTRL][loadDicom][META][WRN]" << QString::fromStdString(why2);
+                    qDebug() << "[CTRL][loadDicom][META] EXIT (fail)";
+                    return;
+                }
+
+                QMetaObject::invokeMethod(
+                    qApp,
+                    [ctrl, meta]() {
+                        if (!ctrl || !ctrl->m_view) {
+                            qWarning() << "[CTRL][loadDicom][META] view/controller gone; skipping UI update";
+                            return;
+                        }
+                        qDebug() << "[CTRL][loadDicom][META] ok; updating view";
+
+                        // Keep any lines already produced earlier (e.g. "Source:" / "When:")
+                        QStringList lines = ctrl->m_meta;
+
+                        auto add = [&](const QString& s) {
+                            const QString t = s.trimmed();
+                            if (!t.isEmpty()) lines << t;
+                        };
+
+                        // Device line: Manufacturer + Model (+ B0 T) if available
+                        {
+                            QStringList parts;
+                            if (!meta.manufacturer.empty())
+                                parts << QString::fromStdString(meta.manufacturer);
+                            if (!meta.modelName.empty())
+                                parts << QString::fromStdString(meta.modelName);
+
+                            if (!parts.isEmpty()) {
+                                QString dev = QString("Device: %1").arg(parts.join(" "));
+                                if (!meta.B0T.empty())
+                                    dev += QString(" (B0: %1 T)").arg(QString::fromStdString(meta.B0T));
+                                add(dev);
+                            }
+                        }
+
+                        // Patient line
+                        if (!meta.patientName.empty() || !meta.patientID.empty()) {
+                            const QString name = QString::fromStdString(meta.patientName);
+                            const QString pid  = QString::fromStdString(meta.patientID);
+                            add(pid.isEmpty()
+                                    ? QString("Patient: %1").arg(name)
+                                    : QString("Patient: %1 (%2)").arg(name, pid));
+                        }
+
+                        // Study date/time (prefer both if available)
+                        if (!meta.studyDate.empty() || !meta.studyTime.empty()) {
+                            const QString d = QString::fromStdString(meta.studyDate);
+                            const QString t = QString::fromStdString(meta.studyTime);
+                            add(t.isEmpty()
+                                    ? QString("Study Date: %1").arg(d)
+                                    : QString("Study: %1 %2").arg(d, t));
+                        }
+
+                        // Sequence timing TR/TE/TI (ms) if available
+                        {
+                            QStringList seq;
+                            if (!meta.tr_ms.empty()) seq << QString("TR %1").arg(QString::fromStdString(meta.tr_ms));
+                            if (!meta.te_ms.empty()) seq << QString("TE %1").arg(QString::fromStdString(meta.te_ms));
+                            if (!meta.ti_ms.empty()) seq << QString("TI %1").arg(QString::fromStdString(meta.ti_ms));
+                            if (!seq.isEmpty()) add(QString("Timing (ms): %1").arg(seq.join(" / ")));
+                        }
+
+                        // Optional: series / institution
+                        if (!meta.seriesDescription.empty())
+                            add(QString("Series: %1").arg(QString::fromStdString(meta.seriesDescription)));
+                        if (!meta.institutionName.empty())
+                            add(QString("Institution: %1").arg(QString::fromStdString(meta.institutionName)));
+
+                        // Push to view
+                        ctrl->m_meta = lines;
+                        ctrl->m_view->setMetadata(ctrl->m_meta);
+                    },
+                    Qt::QueuedConnection);
+
+                qDebug() << "[CTRL][loadDicom][META] EXIT (ok)";
+            } catch (const std::exception& ex) {
+                qCritical() << "[CTRL][loadDicom][META][EXC]" << ex.what();
+            } catch (...) {
+                qCritical() << "[CTRL][loadDicom][META][EXC] unknown";
+            }
+        };
+
+        QTimer::singleShot(std::chrono::milliseconds(0),
+                           m_view ? static_cast<QObject*>(m_view) : static_cast<QObject*>(qApp),
+                           std::move(task));
+    }
+
+    qDebug() << "[CTRL][loadDicom] EXIT ok (frames adopted)";
+    return true;
+}
+
+
+// app_controller.cpp
+static inline QString qclean(const std::string& s) {
+    QString q = QString::fromUtf8(s.c_str());
+    if (q.contains(QChar::ReplacementCharacter)) q = QString::fromLatin1(s.c_str());
+    return q.trimmed();
+}
+
+QStringList AppController::formatDicomMeta(const io::DicomMeta& m) const
+{
+    auto nz = [](const QString& v, const QString& fallback = QString("—")){
+        return v.isEmpty() ? fallback : v;
+    };
+
+    const QString manuf  = qclean(m.manufacturer);
+    const QString model  = qclean(m.modelName);
+    const QString sdate  = qclean(m.studyDate);
+    const QString stime  = qclean(m.studyTime);
+    const QString b0     = qclean(m.B0T);
+    const QString tr     = qclean(m.tr_ms);
+    const QString te     = qclean(m.te_ms);
+    const QString ti     = qclean(m.ti_ms);
+    const QString pname  = qclean(m.patientName);
+    const QString pid    = qclean(m.patientID);
+
+    QStringList L;
+    L << "=== Acquisition ===";
+    if (!manuf.isEmpty() || !model.isEmpty())
+        L << QString("System: %1 — %2").arg(nz(manuf)).arg(nz(model));
+    if (!sdate.isEmpty() || !stime.isEmpty())
+        L << QString("Study Date/Time: %1 %2").arg(nz(sdate, "<unknown>")).arg(nz(stime, "")).trimmed();
+    if (!b0.isEmpty())
+        L << QString("B0: %1 T").arg(b0);
+    if (!tr.isEmpty() || !te.isEmpty() || !ti.isEmpty())
+        L << QString("Sequence (ms): TR=%1  TE=%2  TI=%3")
+                 .arg(nz(tr)).arg(nz(te)).arg(nz(ti));
+
+    if (!pname.isEmpty() || !pid.isEmpty()) {
+        L << "";
+        L << "=== Patient ===";
+        if (!pname.isEmpty()) L << QString("Name: %1").arg(pname);
+        if (!pid.isEmpty())   L << QString("ID: %1").arg(pid);
+    }
+    return L;
 }

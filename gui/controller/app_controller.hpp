@@ -47,7 +47,7 @@ public:
 
     // View → Controller (MVC): histogram requests
     void onHistogramUpdateRequested(const QSize& canvas);
-
+    bool loadDicom(const QString& pathUtf8);
 private:
     struct BusyScope {
         explicit BusyScope(MainWindow* v, const QString& message);
@@ -57,7 +57,6 @@ private:
 
     // Pipeline pieces
     void clearLoadState();
-    bool load_dicom(const std::string& path);
     bool reconstructAllSlicesFromDll(const QString& pathQ, bool fftshift);
     void prepare_fallback();
 
@@ -86,6 +85,8 @@ private:
     static cv::Mat invert8u(const cv::Mat& src);
     void captureNegativeBaseIfNeeded();
     void closeSplashIfAny();
+
+    QStringList formatDicomMeta(const io::DicomMeta& m) const;
 
 private:
     // MVC
