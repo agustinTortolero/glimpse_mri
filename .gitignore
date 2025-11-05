@@ -42,3 +42,19 @@ dev_iterations/
 Glimpse_MRI_alphaTest/
 dicom__io_lib/
 glimpse_dev_*/
+# --- build outputs ---
+gui/build/
+gui/bin/
+**/debug/
+**/release/
+*.pdb
+*.ilk
+*.obj
+*.idb
+*.tlog
+
+# --- generated icons/cache ---
+graphics/build_icons/
+
+# Qt Creator user files
+*.user

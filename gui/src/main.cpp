@@ -11,6 +11,8 @@
 #include <QEventLoop>
 #include <QTimer>
 #include <QFont>
+#include <QIcon>
+
 
 #include <algorithm>
 #include <iostream>
@@ -247,6 +249,28 @@ int main(int argc, char** argv) {
         QGuiApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);  // <<< important
 
         QApplication app(argc, argv);
+
+        // --- App icon (taskbar / dock / titlebar) --------------------------------
+        {
+            QIcon appIcon;
+            appIcon.addFile(":/icons/mri_16.png");
+            appIcon.addFile(":/icons/mri_20.png");
+            appIcon.addFile(":/icons/mri_24.png");
+            appIcon.addFile(":/icons/mri_32.png");
+            appIcon.addFile(":/icons/mri_40.png");
+            appIcon.addFile(":/icons/mri_48.png");
+            appIcon.addFile(":/icons/mri_64.png");
+            appIcon.addFile(":/icons/mri_72.png");
+            appIcon.addFile(":/icons/mri_96.png");
+            appIcon.addFile(":/icons/mri_128.png");
+            appIcon.addFile(":/icons/mri_192.png");
+            appIcon.addFile(":/icons/mri_256.png");
+            appIcon.addFile(":/icons/mri_512.png");
+            QApplication::setWindowIcon(appIcon);
+
+            // Debug print
+            qDebug() << "[DBG][Icon] App icon set from QRC :/icons/*";
+        }
 
 #ifdef QT_VERSION_STR
         {
