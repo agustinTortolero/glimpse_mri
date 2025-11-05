@@ -58,3 +58,6 @@ graphics/build_icons/
 
 # Qt Creator user files
 *.user
+
+# temp note
+graphics/make icons.txt

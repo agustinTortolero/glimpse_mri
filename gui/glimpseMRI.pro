@@ -165,3 +165,10 @@ QMAKE_POST_LINK += $$quote(cmd /c dir /b "$$DEST_DLL_DIR\\*.dll")
 # -------- misc dist files --------
 DISTFILES += \
     assets/images/splash/glimpse_splash_three_sines_v1.png
+
+
+# --- Windows .exe icon (embed ICO at link) -----------------------------------
+win32 {
+    RC_ICONS += $$PWD/assets/images/icons/mri.ico
+    message([DBG][res] RC_ICONS -> $$PWD/assets/images/icons/mri.ico)
+}

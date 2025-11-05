@@ -5,14 +5,12 @@
 #include <QScreen>
 #include <QGuiApplication>
 #include <QCursor>
-#include <QFileInfo>
 #include <QString>
 #include <QLoggingCategory>
 #include <QEventLoop>
 #include <QTimer>
 #include <QFont>
 #include <QIcon>
-
 
 #include <algorithm>
 #include <iostream>
@@ -22,10 +20,11 @@
 // ---- Your app headers (adjust if paths differ) ----
 #include "../view/mainwindow.hpp"
 #include "../controller/app_controller.hpp"
-#include "logger.hpp" // simplelog::Logger, write_banner, now_utc_iso8601
+#include "logger.hpp"
 
 // ======================== Utilities & Qt log bridge =========================
 namespace {
+
 simplelog::Logger* g_logger = nullptr;
 
 void log_and_print(simplelog::Logger& log, const std::string& line) {
@@ -64,7 +63,7 @@ void qt_to_logger_handler(QtMsgType type, const QMessageLogContext& ctx, const Q
 }
 
 simplelog::Logger createLogger() {
-    simplelog::Logger log("GlimpseMRI", "app.log"); // truncates on start
+    simplelog::Logger log("GlimpseMRI", "app.log");
     simplelog::write_banner(log, {
                                      "Glimpse MRI — startup",
                                      "Author: Agustin Tortolero",
@@ -79,29 +78,6 @@ void installQtLogBridge(simplelog::Logger& log) {
     g_logger = &log;
     qInstallMessageHandler(qt_to_logger_handler);
     log_and_print(log, "[DBG][Main] Qt→Logger bridge installed.");
-}
-
-// =============================== CLI input =================================
-QString pickInputPath(int argc, char** argv, simplelog::Logger& log) {
-    if (argc > 1 && argv[1] && argv[1][0] != '\0') {
-        QString cli = QString::fromLocal8Bit(argv[1]);
-        log_and_print(log, std::string("[DBG][Main] Using CLI path: ") + cli.toStdString());
-        return cli;
-    }
-    log_and_print(log, "[DBG][Main] No CLI path. Starting idle (drag-and-drop or File→Open).");
-    return {};
-}
-
-void logInputFileInfo(const QString& inPath, simplelog::Logger& log) {
-    const QFileInfo fi(inPath);
-    std::ostringstream ss;
-    ss << "[DBG][Main] Resolved path:"
-       << "\n  absolute = " << fi.absoluteFilePath().toStdString()
-       << "\n  exists   = " << (fi.exists() ? "yes" : "NO")
-       << "\n  suffix   = " << fi.suffix().toStdString();
-    log_and_print(log, ss.str());
-    if (!fi.exists())
-        log_and_print(log, "[WRN][Main] Input file does not exist; loaders will report errors.");
 }
 
 // =============================== Splash (sharp) =============================
@@ -126,7 +102,6 @@ std::unique_ptr<QSplashScreen> createAndShowSplash(simplelog::Logger& log,
     const QRect avail = scr ? scr->availableGeometry() : QRect(0,0,1280,720);
     const qreal dpr   = scr ? scr->devicePixelRatio() : 1.0;
 
-    // Logical target box (dp)
     int maxW = int(avail.width()  * screenFrac);
     int maxH = int(avail.height() * screenFrac);
     if (clampMaxW > 0) maxW = std::min(maxW, clampMaxW);
@@ -138,8 +113,6 @@ std::unique_ptr<QSplashScreen> createAndShowSplash(simplelog::Logger& log,
         int(std::lround(logicalTarget.height() * dpr))
         );
 
-
-    // If no scaling needed, keep native; else scale smoothly at device resolution
     QPixmap pix;
     const bool fits = (orig.width() <= deviceTarget.width()) && (orig.height() <= deviceTarget.height());
     if (fits) {
@@ -147,10 +120,10 @@ std::unique_ptr<QSplashScreen> createAndShowSplash(simplelog::Logger& log,
         pix.setDevicePixelRatio(dpr);
         log_and_print(log, "[DBG][Splash] Using native size (no scale), DPR set.");
     } else {
-        QImage img = orig.toImage(); // convert once
+        QImage img = orig.toImage();
         QImage scaled = img.scaled(deviceTarget, Qt::KeepAspectRatio, Qt::SmoothTransformation);
         pix = QPixmap::fromImage(scaled);
-        pix.setDevicePixelRatio(dpr); // we rendered at device px
+        pix.setDevicePixelRatio(dpr);
         std::ostringstream ss;
         ss << "[DBG][Splash] Smooth downscale to device " << scaled.width() << "x" << scaled.height()
            << " (logical " << (scaled.width()/dpr) << "x" << (scaled.height()/dpr) << ") DPR=" << dpr;
@@ -160,13 +133,11 @@ std::unique_ptr<QSplashScreen> createAndShowSplash(simplelog::Logger& log,
     auto splash = std::make_unique<QSplashScreen>(pix);
     splash->setWindowFlag(Qt::WindowStaysOnTopHint, true);
 
-    // Center using logical size (respects DPR)
     const QSizeF logicalSize = pix.deviceIndependentSize();
     const QPoint center = avail.center() - QPoint(int(logicalSize.width()/2.0),
                                                   int(logicalSize.height()/2.0));
     splash->move(center);
 
-    // Optional: font tweak + message
     QFont f = splash->font(); f.setPointSizeF(f.pointSizeF() + 1.5); splash->setFont(f);
     splash->show(); splash->raise(); splash->activateWindow();
     {
@@ -180,6 +151,35 @@ std::unique_ptr<QSplashScreen> createAndShowSplash(simplelog::Logger& log,
     return splash;
 }
 
+// ============================ App icon handling =============================
+QIcon buildAppIcon()
+{
+    QIcon ico;
+    ico.addFile(":/icons/mri_16.png");
+    ico.addFile(":/icons/mri_20.png");
+    ico.addFile(":/icons/mri_24.png");
+    ico.addFile(":/icons/mri_32.png");
+    ico.addFile(":/icons/mri_40.png");
+    ico.addFile(":/icons/mri_48.png");
+    ico.addFile(":/icons/mri_64.png");
+    ico.addFile(":/icons/mri_72.png");
+    ico.addFile(":/icons/mri_96.png");
+    ico.addFile(":/icons/mri_128.png");
+    ico.addFile(":/icons/mri_192.png");
+    ico.addFile(":/icons/mri_256.png");
+    ico.addFile(":/icons/mri_512.png");
+
+    const auto sizesN = ico.availableSizes(QIcon::Normal, QIcon::Off);
+    if (sizesN.isEmpty()) {
+        qWarning() << "[WRN][Icon] No available sizes detected. Check :/icons/* in assets.qrc";
+    } else {
+        QStringList s; s.reserve(sizesN.size());
+        for (const QSize& z : sizesN) s << QString("%1x%2").arg(z.width()).arg(z.height());
+        qDebug() << "[DBG][Icon] Normal sizes:" << s.join(", ");
+    }
+    qDebug() << "[DBG][Icon] App icon built from QRC :/icons/*";
+    return ico;
+}
 
 // =============================== Build UI ==================================
 struct Ui { std::unique_ptr<MainWindow> window; std::unique_ptr<AppController> controller; };
@@ -194,20 +194,6 @@ Ui buildUi(simplelog::Logger& log, QSplashScreen* splash) {
     w->setWindowTitle("Glimpse MRI --- alphaTest");
     log_and_print(log, "[DBG][Main] Window title set.");
     return { std::move(w), std::move(c) };
-}
-
-void maybeLoadInitialInput(const QString& inPath,
-                           AppController& controller,
-                           QSplashScreen* splash,
-                           simplelog::Logger& log) {
-    if (inPath.isEmpty()) {
-        log_and_print(log, "[DBG][Main] No auto-load. Waiting for user.");
-        return;
-    }
-    logInputFileInfo(inPath, log);
-    splashMessage(splash, "Loading input...");
-    log_and_print(log, "[DBG][Main] controller.load(...)");
-    controller.load(inPath);
 }
 
 void showUiAndFinishSplash(MainWindow& w, AppController& controller, QSplashScreen* splash, simplelog::Logger& log) {
@@ -245,32 +231,12 @@ int main(int argc, char** argv) {
             log_and_print(log, ctx.str());
         }
 
-        // HiDPI pixmaps BEFORE QApplication to avoid blur when scaling
-        QGuiApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);  // <<< important
+        QGuiApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);
 
         QApplication app(argc, argv);
 
-        // --- App icon (taskbar / dock / titlebar) --------------------------------
-        {
-            QIcon appIcon;
-            appIcon.addFile(":/icons/mri_16.png");
-            appIcon.addFile(":/icons/mri_20.png");
-            appIcon.addFile(":/icons/mri_24.png");
-            appIcon.addFile(":/icons/mri_32.png");
-            appIcon.addFile(":/icons/mri_40.png");
-            appIcon.addFile(":/icons/mri_48.png");
-            appIcon.addFile(":/icons/mri_64.png");
-            appIcon.addFile(":/icons/mri_72.png");
-            appIcon.addFile(":/icons/mri_96.png");
-            appIcon.addFile(":/icons/mri_128.png");
-            appIcon.addFile(":/icons/mri_192.png");
-            appIcon.addFile(":/icons/mri_256.png");
-            appIcon.addFile(":/icons/mri_512.png");
-            QApplication::setWindowIcon(appIcon);
-
-            // Debug print
-            qDebug() << "[DBG][Icon] App icon set from QRC :/icons/*";
-        }
+        // --- App icon (taskbar / dock / titlebar) ----------------------------
+        QApplication::setWindowIcon(buildAppIcon());
 
 #ifdef QT_VERSION_STR
         {
@@ -284,12 +250,12 @@ int main(int argc, char** argv) {
         // 1) Show crisp splash (on top)
         auto splash = createAndShowSplash(log,
                                           /*resourcePath*/":/assets/splash.png",
-                                          /*screenFrac*/ 0.50,   // <<< size fraction (e.g., 0.40, 0.33)
-                                          /*clampMaxW*/  900,    // <<< pixel caps; set <=0 to disable
+                                          /*screenFrac*/ 0.50,
+                                          /*clampMaxW*/  900,
                                           /*clampMaxH*/  600);
 
-        // 2) EXACT HOLD before creating UI (splash cannot be covered)
-        const int exactMs = 5000; // <<<--- SET YOUR EXACT HOLD TIME HERE (ms). e.g., 2000 / 5000 / 10000
+        // 2) EXACT HOLD before creating UI
+        const int exactMs = 5000;
         {
             std::ostringstream ss; ss << "[DBG][Splash] Holding splash for exact " << exactMs << " ms.";
             log_and_print(log, ss.str());
@@ -297,21 +263,17 @@ int main(int argc, char** argv) {
         {
             QEventLoop loop;
             QTimer::singleShot(exactMs, &loop, &QEventLoop::quit);
-            loop.exec(); // processes events, keeps splash responsive and on top
+            loop.exec();
         }
 
-        // 3) Build UI after the hold
+        // 3) Build UI
         Ui ui = buildUi(log, splash.get());
 
-        // 4) Optional CLI load
-        const QString inPath = pickInputPath(argc, argv, log);
-        maybeLoadInitialInput(inPath, *ui.controller, splash.get(), log);
-
-        // 5) Show UI and close splash
+        // 4) Show UI and close splash
         showUiAndFinishSplash(*ui.window, *ui.controller, splash.get(), log);
         splash.reset();
 
-        // 6) Event loop
+        // 5) Event loop
         return runEventLoop(app, log);
 
     } catch (const std::exception& e) {
