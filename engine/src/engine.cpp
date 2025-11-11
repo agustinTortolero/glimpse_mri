@@ -1,9 +1,9 @@
-﻿// engine.cpp — aligned to your headers in /include of mri_engine_v_1_1
-
-// If the build system already defines ENGINE_BUILD, avoid redefinition warning.
-#ifndef ENGINE_BUILD
-#define ENGINE_BUILD
-#endif
+﻿// engine.cpp — portable (Windows / Ubuntu / Raspberry Pi)
+// Build defines you may set in your project:
+//   ENGINE_BUILD           -> exporting symbols on Windows
+//   ENGINE_HAS_FASTMRI=1   -> enable fastMRI loader
+//   ENGINE_HAS_ISMRMRD=1   -> enable ISMRMRD loader
+//   ENGINE_HAS_CUDA=1      -> enable CUDA backend
 
 #include "engine_api.h"
 
@@ -15,77 +15,129 @@
 #include <complex>
 #include <algorithm>
 
-#include "common.hpp"             // ::KsGrid (coils, ny, nx, host)
-#include "fft_and_rss_cpu.hpp"    // fft_and_rss_cpu(...)
+// --- Cross-platform debug sink ------------------------------------------------
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+static inline void platform_debug_output(const char* msg) {
+    if (msg && *msg) {
+        std::fprintf(stderr, "%s\n", msg);
+        OutputDebugStringA(msg);
+        OutputDebugStringA("\n");
+    }
+}
+template <typename... Args>
+static inline void platform_debug_printf(const char* fmt, Args... args) {
+    char buf[2048];
+    std::snprintf(buf, sizeof(buf), fmt ? fmt : "", args...);
+    platform_debug_output(buf);
+}
+#else
+static inline void platform_debug_output(const char* msg) {
+    if (msg && *msg) std::fprintf(stderr, "%s\n", msg);
+}
+template <typename... Args>
+static inline void platform_debug_printf(const char* fmt, Args... args) {
+    char buf[2048];
+    std::snprintf(buf, sizeof(buf), fmt ? fmt : "", args...);
+    std::fprintf(stderr, "%s\n", buf);
+}
+#endif
 
+// --- Feature flags (defaults; override in build system) -----------------------
 #if !defined(ENGINE_HAS_FASTMRI)
 #define ENGINE_HAS_FASTMRI 1
 #endif
 #if !defined(ENGINE_HAS_ISMRMRD)
 #define ENGINE_HAS_ISMRMRD 1
 #endif
+#if !defined(ENGINE_HAS_CUDA)
+#define ENGINE_HAS_CUDA 0
+#endif
+
+// --- Project headers ----------------------------------------------------------
+#include "common.hpp"             // struct KsGrid { int coils, ny, nx; std::vector<std::complex<float>> host; ... }
+#include "fft_and_rss_cpu.hpp"    // bool fft_and_rss_cpu(int C,int ny,int nx,const std::complex<float>*, std::vector<float>&)
 
 #if ENGINE_HAS_FASTMRI
-#include "io_fastmri.hpp"      // FastMRIInfo, fastmri_probe, fastmri_load_kspace_slice
+#include "io_fastmri.hpp"      // FastMRIInfo, bool fastmri_probe(...), bool fastmri_load_kspace_slice(...)
 #endif
+
 #if ENGINE_HAS_ISMRMRD
-#include "io_ismrmrd.hpp"      // load_ismrmrd_slice(path, slice, step2, ks)
-#include <ismrmrd/dataset.h>   // ISMRMRD::Dataset
-#include <pugixml.hpp>         // XML parsing
+#include "io_ismrmrd.hpp"      // bool load_ismrmrd_slice(path, slice, step2, ks)
+#include <ismrmrd/dataset.h>
+#include <pugixml.hpp>
 #endif
 
 #if ENGINE_HAS_CUDA
-// Declare your CUDA path if you have it linked
-extern bool fft_and_rss_cuda(
-    int C, int ny, int nx,
+// Optional CUDA backend (implemented in a .cu TU)
+extern bool fft_and_rss_cuda(int C, int ny, int nx,
     const std::complex<float>* ks,
     std::vector<float>& out_rss);
 #endif
 
 // ============================================================================
-// Internal state + helpers
+// Internals
 // ============================================================================
 namespace {
 
-    static int g_force_cpu = 0;
-    static int g_device_id = -1;
+    // --- Global state (simple, clarity-first) --------------------------------
+    static int g_force_cpu = 0;    // 1 = force CPU path
+    static int g_device_id = -1;   // as passed to engine_init
 
-    // ---- debug buffer helpers ------------------------------------------------
+    // Progress callback plumbing (C ABI)
+    static engine_progress_fn g_prog_cb = nullptr;
+    static void* g_prog_ud = nullptr;
+
+    // --- Debug buffer helpers -------------------------------------------------
     static void dbg_line(char* dbg, int cap, const char* line) {
-        if (dbg && cap > 0) {
-            int cur = (int)std::strlen(dbg);
-            int len = (int)std::strlen(line);
+        if (dbg && cap > 0 && line) {
+            const int cur = (int)std::strlen(dbg);
+            const int len = (int)std::strlen(line);
             if (cur + len + 2 < cap) {
                 std::strcat(dbg, line);
                 std::strcat(dbg, "\n");
             }
         }
-        std::fprintf(stderr, "%s\n", line);
+        platform_debug_output(line ? line : "");
     }
 
     template <typename... Args>
     static void dbg_printf(char* dbg, int cap, const char* fmt, Args... args) {
         char buf[1024];
-        std::snprintf(buf, sizeof(buf), fmt, args...);
+        std::snprintf(buf, sizeof(buf), fmt ? fmt : "", args...);
         dbg_line(dbg, cap, buf);
     }
 
-    // ---- clarity-first fftshift (copy-and-permute) ---------------------------
+    // --- Progress helper ------------------------------------------------------
+    static inline void report_progress(int pct, const char* stage, char* dbg = nullptr, int cap = 0) {
+        if (pct < 0)  pct = 0;
+        if (pct > 100) pct = 100;
+        const char* tag = stage ? stage : "";
+        char buf[256];
+        std::snprintf(buf, sizeof(buf), "[DBG][ENGINE][PROG] %3d%% %s", pct, tag);
+        dbg_line(dbg, cap, buf);
+        if (g_prog_cb) g_prog_cb(pct, tag, g_prog_ud);
+    }
+
+    // --- fftshift (clarity > performance) ------------------------------------
     static void fftshift2d_inplace(float* img, int ny, int nx) {
         std::vector<float> tmp((size_t)ny * nx);
         const int cy = ny / 2, cx = nx / 2;
         auto idx = [nx](int y, int x) { return (size_t)y * nx + x; };
         for (int y = 0; y < ny; ++y) {
             for (int x = 0; x < nx; ++x) {
-                int yy = (y + cy) % ny;
-                int xx = (x + cx) % nx;
+                const int yy = (y + cy) % ny;
+                const int xx = (x + cx) % nx;
                 tmp[idx(yy, xx)] = img[idx(y, x)];
             }
         }
         std::memcpy(img, tmp.data(), (size_t)ny * nx * sizeof(float));
     }
 
-    // ---- minimal flavor + detection model -----------------------------------
+    // --- Flavor detection -----------------------------------------------------
     enum class Flavor : int { Unknown = 0, ISMRMRD = 1, FastMRI = 2 };
 
     struct DetectedInfo {
@@ -93,37 +145,6 @@ namespace {
         int S{ 0 }, C{ 0 }, ny{ 0 }, nx{ 0 };
         bool has_rss{ false };
     };
-
-    // ---- Progress callback plumbing (lives here so every symbol sees it) -----
-    // Header typedef: typedef void (*engine_progress_fn)(int percent, const char* stage, void* user);
-    static engine_progress_fn g_prog_cb = nullptr;
-    static void* g_prog_ud = nullptr;
-
-    /**
-     * Helper to clamp & emit progress:
-     * - Writes to dbg (if provided) and stderr for traceability.
-     * - Calls the user callback if set.
-     */
-    static inline void report_progress(int pct, const char* stage, char* dbg = nullptr, int cap = 0)
-    {
-        if (pct < 0) pct = 0;
-        if (pct > 100) pct = 100;
-
-        const char* tag = stage ? stage : "";
-
-        if (dbg) {
-            char buf[256];
-            std::snprintf(buf, sizeof(buf), "[DBG][ENGINE][PROG] %3d%% %s", pct, tag);
-            dbg_line(dbg, cap, buf);
-        }
-        else {
-            std::fprintf(stderr, "[DBG][ENGINE][PROG] %3d%% %s\n", pct, tag);
-        }
-
-        if (g_prog_cb) {
-            g_prog_cb(pct, tag, g_prog_ud);
-        }
-    }
 
     // ---------- ISMRMRD slice-range probe ------------------------------------
 #if ENGINE_HAS_ISMRMRD
@@ -154,7 +175,6 @@ namespace {
     }
 #endif
 
-    // ---------- Probing -------------------------------------------------------
     static bool detect_fastmri(const std::string& path, DetectedInfo& out, char* dbg, int cap) {
 #if ENGINE_HAS_FASTMRI
         FastMRIInfo info{};
@@ -190,7 +210,7 @@ namespace {
             return false;
         }
 
-        // Load first slice to get C/ny/nx (matches your legacy approach)
+        // Load first slice to get C/ny/nx
         ::KsGrid ks0;
         if (!load_ismrmrd_slice(path, smin, /*step2=*/-1, ks0)) {
             dbg_line(dbg, cap, "[DBG][ENGINE] ISMRMRD: load first slice failed");
@@ -219,7 +239,7 @@ namespace {
         return false;
     }
 
-    // ---------- Slice loading (into ::KsGrid) ---------------------------------
+    // --- Slice loading ---------------------------------------------------------
     static bool load_slice_fastmri(const std::string& path, int s, ::KsGrid& ks, char* dbg, int cap) {
 #if ENGINE_HAS_FASTMRI
         if (!fastmri_load_kspace_slice(path, s, ks)) {
@@ -237,7 +257,7 @@ namespace {
 
     static bool load_slice_ismrmrd(const std::string& path, int s, ::KsGrid& ks, char* dbg, int cap) {
 #if ENGINE_HAS_ISMRMRD
-        // NOTE: your header requires (path, slice_idx, step2, KsGrid&)
+        // --- Call engine ----------------------------------------------------------
         if (!load_ismrmrd_slice(path, s, /*step2=*/-1, ks)) {
             dbg_printf(dbg, cap, "[ERR][ENGINE] ISMRMRD load slice %d failed", s);
             return false;
@@ -251,7 +271,7 @@ namespace {
 #endif
     }
 
-    // ---------- Reconstruction (CUDA optional, CPU fallback) ------------------
+    // --- Reconstruction dispatch ----------------------------------------------
     static bool reconstruct_slice_rss(const ::KsGrid& ks, std::vector<float>& out_img, bool prefer_cuda, char* dbg, int cap) {
         out_img.clear();
         out_img.resize((size_t)ks.ny * ks.nx);
@@ -292,7 +312,7 @@ extern "C" {
 
     ENGINE_API const char* engine_version(void) {
         static const char* kVersion = ENGINE_VERSION_STR;
-        std::fprintf(stderr, "[DBG][ENGINE] engine_version -> %s\n", kVersion);
+        platform_debug_printf("[DBG][ENGINE] engine_version -> %s", kVersion);
         return kVersion;
     }
 
@@ -302,8 +322,7 @@ extern "C" {
         const char* env_force = std::getenv("MRI_FORCE_CPU");
         g_force_cpu = (device_id == -1) || (env_force && std::strlen(env_force) > 0);
 
-        std::fprintf(stderr,
-            "[DBG][ENGINE] engine_init(device_id=%d) MRI_FORCE_CPU=%s -> force_cpu=%s\n",
+        platform_debug_printf("[DBG][ENGINE] engine_init(device_id=%d) MRI_FORCE_CPU=%s -> force_cpu=%s",
             device_id,
             env_force ? env_force : "null",
             g_force_cpu ? "true" : "false");
@@ -311,12 +330,10 @@ extern "C" {
         return 1; // success
     }
 
-    // NEW: Set/Clear the global progress callback (pairs with header)
-    ENGINE_API void engine_set_progress_cb(engine_progress_fn fn, void* user)
-    {
+    ENGINE_API void engine_set_progress_cb(engine_progress_fn fn, void* user) {
         g_prog_cb = fn;
         g_prog_ud = user;
-        std::fprintf(stderr, "[DBG][ENGINE] engine_set_progress_cb: fn=%p user=%p\n",
+        platform_debug_printf("[DBG][ENGINE] engine_set_progress_cb: fn=%p user=%p",
             (void*)fn, user);
     }
 
@@ -327,7 +344,10 @@ extern "C" {
         int fftshift,
         char* dbg, int dbg_cap)
     {
-        // ------------------- argument checks -------------------
+        // Start clean to avoid junk (Windows/Unix)
+        if (dbg && dbg_cap > 0) dbg[0] = '\0';
+
+        // Args check
         if (!path || !outS || !outH || !outW || !outStack) {
             dbg_line(dbg, dbg_cap, "[ERR][ENGINE] invalid null argument(s)");
             report_progress(100, "Error: args", dbg, dbg_cap);
@@ -344,14 +364,13 @@ extern "C" {
             fftshift ? 1 : 0,
             g_force_cpu ? "CPU" : "AUTO");
 
-        // ------------------- probe / detect flavor -------------------
+        // Detect flavor
         DetectedInfo di{};
         if (!detect_flavor(path, di, dbg, dbg_cap)) {
             dbg_line(dbg, dbg_cap, "[ERR][ENGINE] unknown file flavor (not fastMRI/ISMRMRD)");
             report_progress(100, "Error: flavor", dbg, dbg_cap);
             return 0;
         }
-
         if (di.S <= 0 || di.C <= 0 || di.ny <= 0 || di.nx <= 0) {
             dbg_printf(dbg, dbg_cap, "[ERR][ENGINE] invalid dims after probe S=%d C=%d ny=%d nx=%d",
                 di.S, di.C, di.ny, di.nx);
@@ -360,8 +379,12 @@ extern "C" {
         }
 
         report_progress(5, "Probe/Dimensions", dbg, dbg_cap);
+        dbg_printf(dbg, dbg_cap, "[DBG][ENGINE] dims: S=%d C=%d H=%d W=%d flavor=%s",
+            di.S, di.C, di.ny, di.nx,
+            (di.flavor == Flavor::ISMRMRD ? "ISMRMRD" :
+                di.flavor == Flavor::FastMRI ? "fastMRI" : "Unknown"));
 
-        // ------------------- allocate output stack -------------------
+        // Allocate output stack
         const size_t imgN = (size_t)di.ny * (size_t)di.nx;
         const size_t stackN = (size_t)di.S * imgN;
 
@@ -373,30 +396,33 @@ extern "C" {
         }
 
         report_progress(8, "Alloc output", dbg, dbg_cap);
+        dbg_printf(dbg, dbg_cap, "[DBG][ENGINE] allocated %.3f MB",
+            (double)(stackN * sizeof(float)) / (1024.0 * 1024.0));
 
-        // ------------------- process each slice -------------------
+        // Process each slice
         std::vector<float> slice_img;
         slice_img.reserve(imgN);
 
-        // reserve 10% pre/post, distribute 80% across slices
+        // Reserve 10% pre/post, distribute 80% across slices
         const int base = 10;
         const int span = 80;
         const int denom = (di.S > 0) ? di.S : 1;
 
         for (int s = 0; s < di.S; ++s) {
-            ::KsGrid ks; // from your common.hpp / loader path
+            ::KsGrid ks;
             bool ok_load = false;
 
-            // progress: loading stage
+            // --- Call engine ----------------------------------------------------------
             {
                 const int pct = base + (s * span) / denom;
                 report_progress(pct, "Load slice", dbg, dbg_cap);
+                dbg_printf(dbg, dbg_cap, "[DBG][ENGINE] loading slice %d/%d", s + 1, di.S);
             }
 
             if (di.flavor == Flavor::FastMRI) {
                 ok_load = load_slice_fastmri(path, s, ks, dbg, dbg_cap);
             }
-            else { // Flavor::ISMRMRD
+            else { // ISMRMRD
                 ok_load = load_slice_ismrmrd(path, s, ks, dbg, dbg_cap);
             }
 
@@ -407,13 +433,13 @@ extern "C" {
                 return 0;
             }
 
-            // progress: reconstruct stage (middle of this slice share)
+            // Reconstruct
             {
                 const int pct = base + ((s * span) + span / 2) / denom;
                 report_progress(pct, "Reconstruct", dbg, dbg_cap);
             }
 
-            const bool prefer_cuda = !g_force_cpu;
+            const bool prefer_cuda = (g_force_cpu == 0);
             if (!reconstruct_slice_rss(ks, slice_img, prefer_cuda, dbg, dbg_cap)) {
                 dbg_printf(dbg, dbg_cap, "[ERR][ENGINE] reconstruction failed on slice %d", s);
                 std::free(stack);
@@ -426,22 +452,21 @@ extern "C" {
                 fftshift2d_inplace(slice_img.data(), ks.ny, ks.nx);
             }
 
-            // copy result into the stack
+            // Pick the best available 8-bit image: prefer last shown; else current single; else current slice
             std::memcpy(stack + (size_t)s * imgN, slice_img.data(), imgN * sizeof(float));
 
-            // progress: packed stage
+            // Packed
             {
                 const int pct = base + ((s + 1) * span) / denom;
                 report_progress(pct, "Pack", dbg, dbg_cap);
             }
 
-            // occasional textual progress
             if (((s + 1) % 8) == 0 || s == di.S - 1) {
                 dbg_printf(dbg, dbg_cap, "[DBG][ENGINE] progress: slice %d/%d", s + 1, di.S);
             }
         }
 
-        // ------------------- publish -------------------
+        // Publish
         report_progress(98, "Finalize", dbg, dbg_cap);
 
         *outS = di.S;
@@ -449,19 +474,20 @@ extern "C" {
         *outW = di.nx;
         *outStack = stack;
 
-        // legacy-compat return (1=ISMRMRD, 2=fastMRI)
+        // Legacy-compat return (1=ISMRMRD, 2=fastMRI)
         const int rc = (di.flavor == Flavor::ISMRMRD) ? 1 : 2;
 
         report_progress(100, "Done", dbg, dbg_cap);
+        dbg_printf(dbg, dbg_cap, "[DBG][ENGINE] done: S=%d H=%d W=%d rc=%d", *outS, *outH, *outW, rc);
         return rc;
     }
 
     ENGINE_API void engine_free(void* p) {
         if (!p) {
-            std::fprintf(stderr, "[DBG][ENGINE] engine_free(nullptr) — no-op\n");
+            platform_debug_output("[DBG][ENGINE] engine_free(nullptr) — no-op");
             return;
         }
-        std::fprintf(stderr, "[DBG][ENGINE] engine_free(ptr)\n");
+        platform_debug_output("[DBG][ENGINE] engine_free(ptr)");
         std::free(p);
     }
 

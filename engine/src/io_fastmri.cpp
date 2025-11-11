@@ -1,14 +1,49 @@
-#include "io_fastmri.hpp"
+﻿#include "io_fastmri.hpp"
 
 #include <iostream>
+#include <vector>
+#include <string>
 #include <cstring>
 #include <algorithm>
 
+// ---- Feature flag (override in build if needed) -----------------------------
+#if !defined(ENGINE_HAS_FASTMRI)
+#define ENGINE_HAS_FASTMRI 1
+#endif
+
+#if ENGINE_HAS_FASTMRI
 #include <hdf5.h>
+#endif
 
-// NEW: QA
+// ============================================================================
+// When fastMRI is disabled at build time, provide stubs that log and fail
+// ============================================================================
+#if !ENGINE_HAS_FASTMRI
 
-// ---- local helper: HDF5 cleanup guard ----
+bool fastmri_probe(const std::string& path, FastMRIInfo& info) {
+    (void)path; (void)info;
+    dbg_head("fastMRI"); std::cerr << "fastMRI disabled at build.\n";
+    return false;
+}
+
+bool fastmri_load_rss_slice(const std::string& path, int slice_idx,
+    std::vector<float>& rss, int& ny, int& nx) {
+    (void)path; (void)slice_idx; (void)rss; (void)ny; (void)nx;
+    dbg_head("fastMRI"); std::cerr << "fastMRI disabled at build.\n";
+    return false;
+}
+
+bool fastmri_load_kspace_slice(const std::string& path, int slice_idx, KsGrid& ks) {
+    (void)path; (void)slice_idx; (void)ks;
+    dbg_head("fastMRI"); std::cerr << "fastMRI disabled at build.\n";
+    return false;
+}
+
+#else // ENGINE_HAS_FASTMRI
+
+// ============================================================================
+// HDF5 helpers (RAII)
+// ============================================================================
 struct H5Closer {
     hid_t id = -1;
     enum Kind { KNone, KFile, KDataset, KSpace, KType, KProp } kind = KNone;
@@ -51,10 +86,12 @@ static bool is_compound_complex64(hid_t dset, std::string& name0, std::string& n
     if (H5Tget_class(dt.id) != H5T_COMPOUND) return false;
     const int nmem = H5Tget_nmembers(dt.id);
     if (nmem != 2) return false;
+
     hid_t m0 = H5Tget_member_type(dt.id, 0);
     hid_t m1 = H5Tget_member_type(dt.id, 1);
-    bool ok = (H5Tget_class(m0) == H5T_FLOAT) && (H5Tget_class(m1) == H5T_FLOAT)
-        && (H5Tget_size(m0) == sizeof(float)) && (H5Tget_size(m1) == sizeof(float));
+    bool ok = (H5Tget_class(m0) == H5T_FLOAT) && (H5Tget_class(m1) == H5T_FLOAT) &&
+        (H5Tget_size(m0) == sizeof(float)) && (H5Tget_size(m1) == sizeof(float));
+
     if (ok) {
         char* n0 = H5Tget_member_name(dt.id, 0);
         char* n1 = H5Tget_member_name(dt.id, 1);
@@ -65,15 +102,28 @@ static bool is_compound_complex64(hid_t dset, std::string& name0, std::string& n
     return ok;
 }
 
-// ======================= Probe =======================
+// Layout type for reading compound datasets
+struct H5Cpx { float r, i; };
+
+// ============================================================================
+// Probe
+// ============================================================================
 bool fastmri_probe(const std::string& path, FastMRIInfo& info) {
+    dbg_head("fastMRI"); std::cerr << "probe: '" << path << "'\n";
+
     H5Closer f(H5Fopen(path.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT), H5Closer::KFile);
-    if (f.id < 0) return false;
+    if (f.id < 0) {
+        dbg_head("fastMRI"); std::cerr << "open failed\n";
+        return false;
+    }
 
-    bool kspace_ok = dataset_exists(f.id, "kspace");
-    bool rss_ok = dataset_exists(f.id, "reconstruction_rss");
+    const bool kspace_ok = dataset_exists(f.id, "kspace");
+    const bool rss_ok = dataset_exists(f.id, "reconstruction_rss");
 
-    if (!kspace_ok && !rss_ok) return false;
+    if (!kspace_ok && !rss_ok) {
+        dbg_head("fastMRI"); std::cerr << "no 'kspace' nor 'reconstruction_rss' dataset\n";
+        return false;
+    }
 
     if (kspace_ok) {
         H5Closer d(H5Dopen2(f.id, "kspace", H5P_DEFAULT), H5Closer::KDataset);
@@ -83,12 +133,12 @@ bool fastmri_probe(const std::string& path, FastMRIInfo& info) {
         if (!get_dims(d.id, dims)) return false;
 
         std::string n0, n1;
-        bool is_comp = is_compound_complex64(d.id, n0, n1);
+        const bool is_comp = is_compound_complex64(d.id, n0, n1);
 
         if (is_comp) {
             // expected dims: [slices, coils, ny, nx]
             if (dims.size() != 4) {
-                dbg_head("fastMRI"); std::cerr << "kspace compound but rank=" << dims.size() << " (expect 4)\n";
+                dbg_head("fastMRI"); std::cerr << "kspace compound rank=" << dims.size() << " (expect 4)\n";
                 return false;
             }
             info.slices = (int)dims[0];
@@ -107,6 +157,10 @@ bool fastmri_probe(const std::string& path, FastMRIInfo& info) {
             info.ny = (int)dims[2];
             info.nx = (int)dims[3];
         }
+        dbg_head("fastMRI"); std::cerr << "kspace dims: S=" << info.slices
+            << " C=" << info.coils
+            << " ny=" << info.ny
+            << " nx=" << info.nx << "\n";
     }
 
     if (rss_ok) {
@@ -118,23 +172,34 @@ bool fastmri_probe(const std::string& path, FastMRIInfo& info) {
                 info.ny = std::max(info.ny, (int)dims[1]);
                 info.nx = std::max(info.nx, (int)dims[2]);
                 info.has_rss = true;
+                dbg_head("fastMRI"); std::cerr << "RSS dims: S=" << dims[0]
+                    << " ny=" << dims[1]
+                    << " nx=" << dims[2] << "\n";
             }
         }
     }
 
+    // Optional switch to ignore precomputed RSS if you want to force recon.
 #if FASTMRI_IGNORE_RSS
     if (info.has_rss) {
-        dbg_head("fastMRI"); std::cerr << "IGNORE_RSS=1 -> Forcing reconstruct path (pretend no RSS present)\n";
+        dbg_head("fastMRI"); std::cerr << "IGNORE_RSS=1 → forcing reconstruct path (pretend no RSS).\n";
         info.has_rss = false;
     }
 #endif
 
-    // A very small sanity guard
-    if (info.slices <= 0 || (info.coils <= 0 && !info.has_rss)) return false;
+    // Minimal sanity
+    if (info.slices <= 0 || (info.coils <= 0 && !info.has_rss)) {
+        dbg_head("fastMRI"); std::cerr << "probe sanity failed (S=" << info.slices
+            << " C=" << info.coils
+            << " has_rss=" << (info.has_rss ? 1 : 0) << ")\n";
+        return false;
+    }
     return true;
 }
 
-// ======================= Load RSS slice =======================
+// ============================================================================
+// Load RSS slice
+// ============================================================================
 bool fastmri_load_rss_slice(const std::string& path, int slice_idx,
     std::vector<float>& rss, int& ny, int& nx)
 {
@@ -169,9 +234,9 @@ bool fastmri_load_rss_slice(const std::string& path, int slice_idx,
     return true;
 }
 
-// ======================= Load k-space slice =======================
-struct H5Cpx { float r, i; };  // <-- SINGLE, FILE-SCOPE DEFINITION
-
+// ============================================================================
+// Load k-space slice
+// ============================================================================
 static bool read_kspace_compound_slice(hid_t dset, int slice_idx,
     int coils, int ny, int nx,
     std::vector<H5Cpx>& buf_out)
@@ -204,9 +269,10 @@ static bool read_kspace_splitri_slice(hid_t dset, int slice_idx,
     int coils, int ny, int nx,
     std::vector<float>& buf_ri_out)
 {
-    // Dataset is float32 with last dimension 2, rank=5
+    // Dataset is float32 with last dimension 2, rank=5: [S,C,ny,nx,2]
     H5Closer space(H5Dget_space(dset), H5Closer::KSpace);
     if (space.id < 0) return false;
+
     hsize_t start[5] = { (hsize_t)slice_idx, 0, 0, 0, 0 };
     hsize_t count[5] = { 1, (hsize_t)coils, (hsize_t)ny, (hsize_t)nx, 2 };
     if (H5Sselect_hyperslab(space.id, H5S_SELECT_SET, start, nullptr, count, nullptr) < 0) return false;
@@ -223,6 +289,7 @@ bool fastmri_load_kspace_slice(const std::string& path, int slice_idx, KsGrid& k
 {
     H5Closer f(H5Fopen(path.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT), H5Closer::KFile);
     if (f.id < 0) return false;
+
     H5Closer d(H5Dopen2(f.id, "kspace", H5P_DEFAULT), H5Closer::KDataset);
     if (d.id < 0) return false;
 
@@ -261,10 +328,9 @@ bool fastmri_load_kspace_slice(const std::string& path, int slice_idx, KsGrid& k
     ks.host.assign((size_t)coils * ny * nx, std::complex<float>(0, 0));
 
     if (compound) {
-        std::vector<H5Cpx> tmp;  // <-- use the single, file-scope H5Cpx
+        std::vector<H5Cpx> tmp;  // flattened [1,C,ny,nx]
         if (!read_kspace_compound_slice(d.id, slice_idx, coils, ny, nx, tmp)) return false;
 
-        // Layout is [1, coils, ny, nx] in row-major -> fill [C, ny, nx]
         size_t p = 0;
         for (int c = 0; c < coils; ++c) {
             for (int y = 0; y < ny; ++y) {
@@ -275,7 +341,7 @@ bool fastmri_load_kspace_slice(const std::string& path, int slice_idx, KsGrid& k
         }
     }
     else {
-        std::vector<float> tmp; // [1,C,ny,nx,2]
+        std::vector<float> tmp; // flattened [1,C,ny,nx,2]
         if (!read_kspace_splitri_slice(d.id, slice_idx, coils, ny, nx, tmp)) return false;
 
         size_t p = 0;
@@ -294,3 +360,4 @@ bool fastmri_load_kspace_slice(const std::string& path, int slice_idx, KsGrid& k
     return true;
 }
 
+#endif // ENGINE_HAS_FASTMRI

@@ -1,4 +1,4 @@
-// dicom__io_lib/src/dicom_io_lib.cpp
+// dicom_io_lib/src/dicom_io_lib.cpp
 // Keep it simple: Monochrome DICOM → 8-bit output. Basic write (SC MONOCHROME2).
 
 #include <cstdint>
@@ -8,6 +8,7 @@
 #include <string>
 #include <new>          // std::nothrow
 #include <exception>    // std::exception
+#include <limits>       // std::numeric_limits  [Linux/GCC/Clang friendly]
 
 // ---- DCMTK: osconfig FIRST ----
 #include <dcmtk/config/osconfig.h>
@@ -85,6 +86,8 @@ bool dicom_probe(const char* path, int* is_multiframe, int* out_w0, int* out_h0,
         dbg_put(dbg, dbg_cap, "[DICOM][Probe] '%s'\n", path ? path : "(null)");
         if (!valid_path(path)) { dbg_put(dbg, dbg_cap, "[ERR] null/empty path\n"); return false; }
 
+        // NOTE: DCMTK’s DicomImage(char const*) expects local-encoding path.
+        // For Unicode-only Windows paths consider using OFFilename + UTF-8 conversion.
         DicomImage di(path);
         if (di.getStatus() != EIS_Normal) {
             dbg_put(dbg, dbg_cap, "[ERR] DicomImage status=%d\n", (int)di.getStatus());

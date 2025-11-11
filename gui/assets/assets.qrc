@@ -1,8 +1,8 @@
 <RCC>
     <qresource prefix="/assets">
         <file alias="splash.png">images/splash/glimpse_splash_three_sines_v1.png</file>
+        <file>app_win.rc</file>
     </qresource>
-
     <qresource prefix="/img/badges">
         <file alias="Cpp_logo.png">images/badges/Cpp_logo.png</file>
         <file alias="Nvidia_logo.png">images/badges/Nvidia_logo.png</file>
@@ -10,7 +10,6 @@
         <file alias="OpenMP_logo.png">images/badges/OpenMP_logo.png</file>
         <file alias="Qt_logo.png">images/badges/Qt_logo.png</file>
     </qresource>
-
     <qresource prefix="/icons">
         <file alias="mri_16.png">images/icons/mri_16.png</file>
         <file alias="mri_20.png">images/icons/mri_20.png</file>
@@ -25,6 +24,6 @@
         <file alias="mri_192.png">images/icons/mri_192.png</file>
         <file alias="mri_256.png">images/icons/mri_256.png</file>
         <file alias="mri_512.png">images/icons/mri_512.png</file>
-
     </qresource>
+    <qresource prefix="/"/>
 </RCC>

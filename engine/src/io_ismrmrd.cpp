@@ -11,16 +11,9 @@
 #include <vector>
 #include <chrono>
 #include <unordered_map>
+#include <mutex>
 
-#include <pugixml.hpp>
-#include <ismrmrd/ismrmrd.h>
-#include <ismrmrd/dataset.h>
-
-#ifdef _OPENMP
-#include <omp.h>
-#endif
-
-// =================== Feature toggles ===================
+// Feature gates (override from your build system if needed)
 #ifndef BENCHMARK
 #define BENCHMARK 0
 #endif
@@ -29,23 +22,52 @@
 #define USE_SLICE_CACHE 1
 #endif
 
-// 1 = parallelize over acquisitions (ky rows) [recommended]
-// 0 = parallelize over coils (legacy behavior)
+// 1 = parallelize over acquisitions (ky rows), 0 = over coils
 #ifndef PAR_KY
 #define PAR_KY 1
 #endif
 
+#ifndef ENGINE_HAS_ISMRMRD
+#define ENGINE_HAS_ISMRMRD 1
+#endif
+
+// Debug verbosity for per-line placement (heavy)
+#ifndef DBG_IO_LINES
+#define DBG_IO_LINES 0
+#endif
+
+// -----------------------------------------------------------------------------
+// If ISMRMRD is disabled at build time, provide a stub that logs + fails
+// -----------------------------------------------------------------------------
+#if !ENGINE_HAS_ISMRMRD
+
+bool load_ismrmrd_slice(const std::string& path, int slice_idx, int step2, KsGrid& ks) {
+    (void)path; (void)slice_idx; (void)step2; (void)ks;
+    dbg_head("IO"); std::cerr << "ISMRMRD disabled at build; cannot load slice.\n";
+    return false;
+}
+
+#else // ENGINE_HAS_ISMRMRD
+
+// External deps (header-only PugiXML + ISMRMRD C++ API)
+#include <pugixml.hpp>
+#include <ismrmrd/ismrmrd.h>
+#include <ismrmrd/dataset.h>
+
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 // =================== Benchmark helpers ===================
 #if BENCHMARK
-#include <chrono>
 using bench_clock = std::chrono::high_resolution_clock;
 #define TIC(name) auto name##_tic = bench_clock::now()
 #define TOC(name, label)                                                      \
-    do {                                                                        \
-      auto name##_toc = bench_clock::now();                                     \
-      double name##_ms = std::chrono::duration<double, std::milli>(             \
-                           name##_toc - name##_tic).count();                     \
-      dbg_head("BENCH"); std::cerr << label << " = " << name##_ms << " ms\n";   \
+    do {                                                                      \
+        auto name##_toc = bench_clock::now();                                 \
+        double name##_ms = std::chrono::duration<double, std::milli>(         \
+                             name##_toc - name##_tic).count();                 \
+        dbg_head("BENCH"); std::cerr << label << " = " << name##_ms << " ms\n"; \
     } while(0)
 #else
 #define TIC(name)       do{}while(0)
@@ -65,13 +87,8 @@ using bench_clock = std::chrono::high_resolution_clock;
 #define IO_LOG(tag, msg) do{}while(0)
 #endif
 
-// Verbose per-line placement logs (off by default)
-#ifndef DBG_IO_LINES
-#define DBG_IO_LINES 0
-#endif
-
 // ======================================================================================
-// Helpers for load_ismrmrd_slice
+// Helpers
 // ======================================================================================
 namespace {
 
@@ -182,7 +199,6 @@ namespace {
         int nx_half = 0;
     };
 
-    // --- local clamp helper ---
     static inline int clampv(int v, int lo, int hi) {
         if (v < lo) return lo;
         if (v > hi) return hi;
@@ -221,7 +237,7 @@ namespace {
         return m;
     }
 
-    // =================== Prefetch (thread-safe dataset reads) ===================
+    // =================== Prefetch ===================
     struct PrefetchedAcq {
         int ky = 0;
         int nsamp = 0;
@@ -253,8 +269,7 @@ namespace {
 
             const auto* src = reinterpret_cast<const std::complex<float>*>(acq.getDataPtr());
             pa.data.resize((size_t)pa.active_channels * (size_t)pa.nsamp);
-            std::memcpy(pa.data.data(), src,
-                pa.data.size() * sizeof(std::complex<float>));
+            std::memcpy(pa.data.data(), src, pa.data.size() * sizeof(std::complex<float>));
 
             out.push_back(std::move(pa));
         }
@@ -284,8 +299,7 @@ namespace {
 
             const auto* src = reinterpret_cast<const std::complex<float>*>(acq.getDataPtr());
             pa.data.resize((size_t)pa.active_channels * (size_t)pa.nsamp);
-            std::memcpy(pa.data.data(), src,
-                pa.data.size() * sizeof(std::complex<float>));
+            std::memcpy(pa.data.data(), src, pa.data.size() * sizeof(std::complex<float>));
 
             out.push_back(std::move(pa));
         }
@@ -333,7 +347,7 @@ namespace {
 #endif
     }
 
-    // =================== Slice cache ===================
+    // =================== Slice cache (thread-safe) ===================
 #if USE_SLICE_CACHE
     struct SliceEntry {
         int C = 0;
@@ -354,8 +368,8 @@ namespace {
         bool ready = false;
     };
 
-    // Cache keyed by (path + '#' + step2_use + ':' + step2_val)
     static std::unordered_map<std::string, FileSliceCache> g_slice_cache;
+    static std::mutex g_cache_mtx;
 
     static std::string make_cache_key(const std::string& path, const Step2Policy& step) {
         return path + "#" + (step.use ? "1" : "0") + ":" + std::to_string(step.value);
@@ -368,12 +382,16 @@ namespace {
     {
         HeaderSizes hs = parse_sizes_from_header(enc);
         const std::string key = make_cache_key(path, step);
-        auto it = g_slice_cache.find(key);
-        if (it != g_slice_cache.end() && it->second.ready) {
-            return it->second;
+
+        {
+            std::scoped_lock<std::mutex> lock(g_cache_mtx);
+            auto it = g_slice_cache.find(key);
+            if (it != g_slice_cache.end() && it->second.ready) {
+                return it->second;
+            }
         }
 
-        // Build cache
+        // Build cache (outside the lock — dataset reads are expensive)
         TIC(preindex);
         FileSliceCache fresh;
         fresh.path = path;
@@ -424,16 +442,24 @@ namespace {
         }
 
         fresh.ready = true;
-        g_slice_cache[key] = std::move(fresh);
+
+        // Publish under lock
+        {
+            std::scoped_lock<std::mutex> lock(g_cache_mtx);
+            g_slice_cache[key] = std::move(fresh);
+        }
         TOC(preindex, "slice_cache_build_ms");
+
+        // Return reference to the stored cache
+        std::scoped_lock<std::mutex> lock2(g_cache_mtx);
         return g_slice_cache[key];
     }
 #endif // USE_SLICE_CACHE
 
-} // namespace
+} // namespace (helpers)
 
 // ======================================================================================
-// Load ONE slice -> [C, ny, nx] k-space (OpenMP used on per-coil or per-ky)
+// Load ONE slice -> [C, ny, nx] k-space
 // ======================================================================================
 bool load_ismrmrd_slice(const std::string& path, int slice_idx, int step2, KsGrid& ks)
 {
@@ -441,7 +467,7 @@ bool load_ismrmrd_slice(const std::string& path, int slice_idx, int step2, KsGri
         const char* group = "dataset";
         ISMRMRD::Dataset d(path.c_str(), group, false);
 
-        // ---------------------- (1) Header read + XML parse ----------------------
+        // (1) Header read + XML parse
         TIC(hdr);
         std::string xml; d.readHeader(xml);
         pugi::xml_document doc;
@@ -470,7 +496,7 @@ bool load_ismrmrd_slice(const std::string& path, int slice_idx, int step2, KsGri
             << "  recX=" << sizes.recX << " encY=" << sizes.encY << "\n");
 
 #if USE_SLICE_CACHE
-        // =================== Cached path (best performance) ===================
+        // Cached path (best performance)
         FileSliceCache& cache = get_or_build_cache(path, d, enc, step);
 
         const int sidx = slice_idx - cache.min_slice;
@@ -491,16 +517,16 @@ bool load_ismrmrd_slice(const std::string& path, int slice_idx, int step2, KsGri
         dims.nsamp_max = se.nsamp_max;
         dims.saw_any = true;
 
-        // ------------------------------ (3) Allocate ------------------------------
+        // (3) Allocate
         TIC(alloc);
         alloc_grid(ks, dims, cache.recX, cache.encY);
         TOC(alloc, "alloc_grid_ms");
 
-        // Prefetch slice acquisitions (serialized, safe)
+        // Prefetch slice acquisitions
         std::vector<PrefetchedAcq> pre;
         prefetch_from_ids(d, se.acq_ids, pre);
 
-        // -------------------------- (4) Second pass copy --------------------------
+        // (4) Second pass copy
         TIC(pass2);
 #if PAR_KY
         // Parallel over acquisitions (ky rows) — inner copy uses memcpy
@@ -532,8 +558,8 @@ bool load_ismrmrd_slice(const std::string& path, int slice_idx, int step2, KsGri
         return true;
 
 #else
-        // =================== Legacy path (per-slice scan) ===================
-        // -------------------------- (2) First pass scan --------------------------
+        // Legacy path (per-slice scan without cache)
+        // (2) First pass scan
         TIC(pass1);
         AcceptFn accept = make_accept_predicate(slice_idx, step);
         ScanDims dims = first_pass_scan(d, accept);
@@ -545,7 +571,7 @@ bool load_ismrmrd_slice(const std::string& path, int slice_idx, int step2, KsGri
             return false;
         }
 
-        // ------------------------------ (3) Allocate ------------------------------
+        // (3) Allocate
         TIC(alloc);
         alloc_grid(ks, dims, sizes.recX, sizes.encY);
         TOC(alloc, "alloc_grid_ms");
@@ -554,7 +580,7 @@ bool load_ismrmrd_slice(const std::string& path, int slice_idx, int step2, KsGri
         std::vector<PrefetchedAcq> pre;
         prefetch_from_dataset(d, accept, pre);
 
-        // -------------------------- (4) Second pass copy --------------------------
+        // (4) Second pass copy
         TIC(pass2);
 #if PAR_KY
 #pragma omp parallel for schedule(static) if(pre.size() > 1)
@@ -592,3 +618,5 @@ bool load_ismrmrd_slice(const std::string& path, int slice_idx, int step2, KsGri
         return false;
     }
 }
+
+#endif // ENGINE_HAS_ISMRMRD

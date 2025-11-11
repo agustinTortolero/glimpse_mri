@@ -1,18 +1,25 @@
-# =========================
-# App .pro (DEBUG ONLY)
-# =========================
+# ============================================================
+# Glimpse MRI — Qt 6 — RELEASE ONLY — Windows + Linux (Jetson)
+# ============================================================
 QT += core gui widgets
-CONFIG += c++17
 TEMPLATE = app
+CONFIG  += c++17 release
+CONFIG  -= debug
 
+# ---------- Common project layout ----------
 OBJECTS_DIR = $$OUT_PWD/obj
 MOC_DIR     = $$OUT_PWD/moc
 RCC_DIR     = $$OUT_PWD/rcc
 UI_DIR      = $$OUT_PWD/ui
 
-# -------- sources --------
+INCLUDEPATH += $$PWD $$PWD/model $$PWD/controller $$PWD/view $$PWD/src
+DEPENDPATH  += $$PWD $$PWD/model $$PWD/controller $$PWD/view $$PWD/src
+RESOURCES   += assets/assets.qrc
+
+message([os] qmake host/platform selects proper block below)
+
+# ---------- Sources / Headers ----------
 SOURCES += \
-    model/dicom_dll.cpp \
     model/io.cpp \
     src/main.cpp \
     controller/app_controller.cpp \
@@ -20,7 +27,7 @@ SOURCES += \
     view/progress_splash.cpp
 
 HEADERS += \
-    model/dicom_dll.hpp \
+    model/engine_api.h \
     model/io.hpp \
     controller/app_controller.hpp \
     src/logger.hpp \
@@ -28,147 +35,187 @@ HEADERS += \
     src/image_utils.hpp \
     view/progress_splash.hpp
 
-# Resources (contains /icons PNGs)
-RESOURCES += assets/assets.qrc
-
-# -------- vcpkg --------
-VCPKG_ROOT = C:/src/vcpkg/installed/x64-windows
-VCPKG_INC  = $$VCPKG_ROOT/include
-VCPKG_LIBD = $$VCPKG_ROOT/debug/lib
-VCPKG_BIND = $$VCPKG_ROOT/debug/bin
-
-INCLUDEPATH += $$VCPKG_INC
-DEFINES += _CRT_SECURE_NO_WARNINGS
-DEFINES += HAVE_ISMRMRD
-
-# Enable DCMTK JPEG/JLS by default (flip to 0 if a lib is missing)
-DEFINES += IO_ENABLE_DCMJPEG=1 IO_ENABLE_DCMJPLS=1 IO_ENABLE_DCMJ2K=0
-
-QMAKE_LFLAGS_DEBUG += /VERBOSE:LIB
-QMAKE_CXXFLAGS += /bigobj
-
-# ---- OpenCV (debug) ----
-OPENCV_INC = C:/opencv/opencv/build/include
-OPENCV_LIB = C:/opencv/opencv/build/x64/vc16/lib
-INCLUDEPATH += $$OPENCV_INC
-win32:CONFIG(debug, debug|release):LIBS += -L$$OPENCV_LIB -lopencv_world490d -ladvapi32
-
-# =========================
-# MRI ENGINE DLL (Debug)
-# =========================
-
-# (A) Choose the header folder (prefer Glimpse/dev; fall back to EXPERIMENTS)
-ENGINE_INC_PRIMARY  = C:/AgustinTortolero_repos/MRI/Glimpse/dev_iterations/mri_engine/mri_engine_v_1_1/include
-ENGINE_INC_FALLBACK = C:/AgustinTortolero_repos/MRI/MRI_EXPERIMENTS/engine/engine_1/mri_engine_v_1_1/include
-
-MRI_DLL_INC = $$ENGINE_INC_PRIMARY
-win32:!exists($$MRI_DLL_INC) {
-    MRI_DLL_INC = $$ENGINE_INC_FALLBACK
-    message([WARN][App] Primary engine include not found using fallback $$MRI_DLL_INC)
-}
-
-# Put engine include FIRST so it wins shadowing
-INCLUDEPATH = $$MRI_DLL_INC $$INCLUDEPATH
-DEPENDPATH  = $$MRI_DLL_INC $$DEPENDPATH
-message([DBG][App] Using engine include $$MRI_DLL_INC)
-
-# (B) Library/DLL folder — actual Debug path
-MRI_DLL_DIR = C:/AgustinTortolero_repos/MRI/MRI_EXPERIMENTS/engine/engine_1/build/Debug
-message([DBG][App] MRI_DLL_DIR $$MRI_DLL_DIR)
-
-# Link against the import lib that sits next to the DLL
-win32:exists($$MRI_DLL_DIR) {
-    LIBS += -L"$$MRI_DLL_DIR" -lmri_engine_v_1_1
-    message([DBG][App] Linking with mri_engine_v_1_1.lib from $$MRI_DLL_DIR)
-} else {
-    message([ERR][App] MRI_DLL_DIR not found $$MRI_DLL_DIR not adding -L)
-}
-
-# =========================
-# vcpkg libs (Debug)
-# =========================
-LIBS += -L$$VCPKG_LIBD
-
-# ISMRMRD + deps
-LIBS += -lismrmrd -lpugixml
-LIBS += -lhdf5_D -lhdf5_hl_D -lhdf5_cpp_D -lhdf5_hl_cpp_D
-LIBS += -lzlibd -laec
-
-# DCMTK core
-message([DBG] DCMTK linking dcmimgle dcmimage dcmdata oflog ofstd)
-LIBS += -ldcmimgle -ldcmimage -ldcmdata -loflog -lofstd
-
-# DCMTK decoders (JPEG/JLS). Comment out if your vcpkg DCMTK lacks them.
-# JPEG baseline/extended/lossless
-LIBS += -ldcmjpeg -lijg8 -lijg12 -lijg16
-# JPEG-LS
-LIBS += -ldcmjpls -ldcmtkcharls
-# JPEG 2000 (enable if you flip IO_ENABLE_DCMJ2K=1 and have the libs)
-# LIBS += -ldcmj2k -lopenjp2
-
-LIBS += -lshell32 -lole32
-
-# =========================
-# RUNTIME DLL COPY (Debug) → next to exe in shadow build
-# =========================
-DEST_DLL_DIR = $$OUT_PWD/debug
-
-QMAKE_POST_LINK =
-QMAKE_POST_LINK += $$quote(cmd /c if not exist "$$DEST_DLL_DIR" mkdir "$$DEST_DLL_DIR")
-QMAKE_POST_LINK += $$quote(cmd /c echo [DBG] Copying runtime DLLs to "$$DEST_DLL_DIR")
-
-# --- Engine DLL ---------------------------------------------------------------
-win32:exists($$MRI_DLL_DIR) {
-    QMAKE_POST_LINK += $$quote(cmd /c xcopy /Y /I /Q "$$MRI_DLL_DIR\\mri_engine_v_1_1.dll" "$$DEST_DLL_DIR\\")
-}
-
-# --- HDF5 debug DLLs (explicit, with diagnostics) ----------------------------
-QMAKE_POST_LINK += $$quote(cmd /c echo [DBG] Listing vcpkg debug bin "$$VCPKG_BIND")
-QMAKE_POST_LINK += $$quote(cmd /c dir /b "$$VCPKG_BIND\\hdf5*.dll")
-
-QMAKE_POST_LINK += $$quote(cmd /c if exist "$$VCPKG_BIND\\hdf5_cpp_D.dll"     xcopy /Y /I /Q "$$VCPKG_BIND\\hdf5_cpp_D.dll"     "$$DEST_DLL_DIR\\")
-QMAKE_POST_LINK += $$quote(cmd /c if exist "$$VCPKG_BIND\\hdf5_hl_cpp_D.dll"  xcopy /Y /I /Q "$$VCPKG_BIND\\hdf5_hl_cpp_D.dll"  "$$DEST_DLL_DIR\\")
-QMAKE_POST_LINK += $$quote(cmd /c if exist "$$VCPKG_BIND\\hdf5_D.dll"         xcopy /Y /I /Q "$$VCPKG_BIND\\hdf5_D.dll"         "$$DEST_DLL_DIR\\")
-QMAKE_POST_LINK += $$quote(cmd /c if exist "$$VCPKG_BIND\\hdf5_hl_D.dll"      xcopy /Y /I /Q "$$VCPKG_BIND\\hdf5_hl_D.dll"      "$$DEST_DLL_DIR\\")
-# Optional non-suffixed
-QMAKE_POST_LINK += $$quote(cmd /c if exist "$$VCPKG_BIND\\hdf5_cpp.dll"       xcopy /Y /I /Q "$$VCPKG_BIND\\hdf5_cpp.dll"       "$$DEST_DLL_DIR\\")
-QMAKE_POST_LINK += $$quote(cmd /c if exist "$$VCPKG_BIND\\hdf5_hl_cpp.dll"    xcopy /Y /I /Q "$$VCPKG_BIND\\hdf5_hl_cpp.dll"    "$$DEST_DLL_DIR\\")
-QMAKE_POST_LINK += $$quote(cmd /c if exist "$$VCPKG_BIND\\hdf5.dll"           xcopy /Y /I /Q "$$VCPKG_BIND\\hdf5.dll"           "$$DEST_DLL_DIR\\")
-QMAKE_POST_LINK += $$quote(cmd /c if exist "$$VCPKG_BIND\\hdf5_hl.dll"        xcopy /Y /I /Q "$$VCPKG_BIND\\hdf5_hl.dll"        "$$DEST_DLL_DIR\\")
-
-# --- Zlib (debug variants) ---------------------------------------------------
-QMAKE_POST_LINK += $$quote(cmd /c if exist "$$VCPKG_BIND\\zlibd1.dll" xcopy /Y /I /Q "$$VCPKG_BIND\\zlibd1.dll" "$$DEST_DLL_DIR\\")
-QMAKE_POST_LINK += $$quote(cmd /c if exist "$$VCPKG_BIND\\zlib1.dll"  xcopy /Y /I /Q "$$VCPKG_BIND\\zlib1.dll"  "$$DEST_DLL_DIR\\")
-
-# --- DCMTK core + decoders ---------------------------------------------------
-QMAKE_POST_LINK += $$quote(cmd /c xcopy /Y /I /Q "$$VCPKG_BIND\\dcm*.dll"     "$$DEST_DLL_DIR\\")
-QMAKE_POST_LINK += $$quote(cmd /c xcopy /Y /I /Q "$$VCPKG_BIND\\of*.dll"      "$$DEST_DLL_DIR\\")
-QMAKE_POST_LINK += $$quote(cmd /c xcopy /Y /I /Q "$$VCPKG_BIND\\ijg*.dll"     "$$DEST_DLL_DIR\\")
-QMAKE_POST_LINK += $$quote(cmd /c xcopy /Y /I /Q "$$VCPKG_BIND\\*charls*.dll" "$$DEST_DLL_DIR\\")
-# JPEG 2000 if enabled:
-# QMAKE_POST_LINK += $$quote(cmd /c xcopy /Y /I /Q "$$VCPKG_BIND\\openjp2*.dll" "$$DEST_DLL_DIR\\")
-
-# --- OpenCV runtime (debug) --------------------------------------------------
-QMAKE_POST_LINK += $$quote(cmd /c xcopy /Y /I /Q "C:/opencv/opencv/build/x64/vc16/bin/opencv_world*d.dll" "$$DEST_DLL_DIR\\")
-
-# --- CUDA runtime DLLs -------------------------------------------------------
-CUDA_PATH = C:/PROGRA~1/NVIDIA~2/CUDA/v12.4
-QMAKE_POST_LINK += $$quote(cmd /c if exist "$$CUDA_PATH\\bin\\cudart64*.dll"   xcopy /Y /I /Q "$$CUDA_PATH\\bin\\cudart64*.dll"   "$$DEST_DLL_DIR\\")
-QMAKE_POST_LINK += $$quote(cmd /c if exist "$$CUDA_PATH\\bin\\cufft64*.dll"    xcopy /Y /I /Q "$$CUDA_PATH\\bin\\cufft64*.dll"    "$$DEST_DLL_DIR\\")
-QMAKE_POST_LINK += $$quote(cmd /c if exist "$$CUDA_PATH\\bin\\cublas64*.dll"   xcopy /Y /I /Q "$$CUDA_PATH\\bin\\cublas64*.dll"   "$$DEST_DLL_DIR\\")
-QMAKE_POST_LINK += $$quote(cmd /c if exist "$$CUDA_PATH\\bin\\cublasLt64*.dll" xcopy /Y /I /Q "$$CUDA_PATH\\bin\\cublasLt64*.dll" "$$DEST_DLL_DIR\\")
-
-# --- Final listing -----------------------------------------------------------
-QMAKE_POST_LINK += $$quote(cmd /c echo [DBG] DLLs now in "$$DEST_DLL_DIR":)
-QMAKE_POST_LINK += $$quote(cmd /c dir /b "$$DEST_DLL_DIR\\*.dll")
-
-# -------- misc dist files --------
-DISTFILES += \
-    assets/images/splash/glimpse_splash_three_sines_v1.png
-
-
-# --- Windows .exe icon (embed ICO at link) -----------------------------------
+# ============================================================
+# WINDOWS (MSVC) — RELEASE
+# ============================================================
 win32 {
-    RC_ICONS += $$PWD/assets/images/icons/mri.ico
-    message([DBG][res] RC_ICONS -> $$PWD/assets/images/icons/mri.ico)
+# --- Windows resource: icon + version info (hardcoded path in RC) ---
+RC_FILE = assets/app_win.rc
+message([win][rc] using RC_FILE assets/app_win.rc)
+
+
+
+
+    message([win] ===== Windows/MSVC RELEASE configuration =====)
+
+    # ---- vcpkg (release) ----
+    VCPKG_ROOT = C:/src/vcpkg/installed/x64-windows
+    VCPKG_INC  = $$VCPKG_ROOT/include
+    VCPKG_LIBR = $$VCPKG_ROOT/lib
+    VCPKG_BINR = $$VCPKG_ROOT/bin
+
+    INCLUDEPATH += $$VCPKG_INC
+    message([win][vcpkg] INC=$$VCPKG_INC  LIBR=$$VCPKG_LIBR  BINR=$$VCPKG_BINR)
+
+    DEFINES += _CRT_SECURE_NO_WARNINGS
+    DEFINES += HAVE_ISMRMRD
+    DEFINES += IO_ENABLE_DCMJPEG=1 IO_ENABLE_DCMJPLS=1 IO_ENABLE_DCMJ2K=0
+
+    QMAKE_CXXFLAGS += /bigobj /O2 /DNDEBUG
+    QMAKE_LFLAGS   += /INCREMENTAL:NO
+
+    # ---- OpenCV (exact paths; release) ----
+    OPENCV_INC = C:/opencv/opencv/build/include
+    OPENCV_LIB = C:/opencv/opencv/build/x64/vc16/lib
+    INCLUDEPATH += $$OPENCV_INC
+    message([win][opencv] INC=$$OPENCV_INC  LIB=$$OPENCV_LIB)
+
+    LIBS += -L$$OPENCV_LIB -lopencv_world490 -ladvapi32
+    message([win][opencv] linking opencv_world490 + advapi32)
+
+    # ---- MRI Engine & DICOM (GUI-local release libs) ----
+    ENGINE_LIB_RELEASE = $$PWD/release/mri_engine_v_1_1.lib
+    ENGINE_DLL_RELEASE = $$PWD/release/mri_engine_v_1_1.dll
+    DICOM_LIB_RELEASE  = $$PWD/release/dicom_io_lib.lib
+    DICOM_DLL_RELEASE  = $$PWD/release/dicom_io_lib.dll
+
+    QMAKE_LIBDIR += $$PWD/release
+    message([win][libdir] + $$PWD/release)
+
+    exists($$ENGINE_LIB_RELEASE) {
+        LIBS += "$$ENGINE_LIB_RELEASE"
+        message([win][engine][release] +link $$ENGINE_LIB_RELEASE)
+    } else {
+        message([win][engine][release][ERR] missing import lib: $$ENGINE_LIB_RELEASE)
+    }
+
+    exists($$DICOM_LIB_RELEASE) {
+        LIBS += "$$DICOM_LIB_RELEASE"
+        message([win][dicom ][release] +link $$DICOM_LIB_RELEASE)
+    } else {
+        message([win][dicom ][release][ERR] missing import lib: $$DICOM_LIB_RELEASE)
+    }
+
+    # ---- vcpkg release libs ----
+    LIBS += -L$$VCPKG_LIBR
+    LIBS += -lismrmrd -lpugixml
+    LIBS += -lhdf5 -lhdf5_hl -lhdf5_cpp -lhdf5_hl_cpp
+    LIBS += -lzlib -laec
+    message([win][DCMTK] link dcmimgle dcmimage dcmdata oflog ofstd + decoders)
+    LIBS += -ldcmimgle -ldcmimage -ldcmdata -loflog -lofstd
+    LIBS += -ldcmjpeg -lijg8 -lijg12 -lijg16
+    LIBS += -ldcmjpls -ldcmtkcharls
+    # LIBS += -ldcmj2k -lopenjp2    # if JPEG2000
+    LIBS += -lshell32 -lole32
+
+    # ---- Post-link staging (Windows only) ----
+    DEST_DLL_DIR = $$OUT_PWD/release
+    message([win][stage] DEST_DLL_DIR = $$DEST_DLL_DIR)
+
+    QMAKE_POST_LINK += $$quote(cmd /c if not exist "$$DEST_DLL_DIR" mkdir "$$DEST_DLL_DIR")
+    QMAKE_POST_LINK += $$quote(cmd /c echo [stage] Copying runtime DLLs -> "$$DEST_DLL_DIR")
+
+    exists($$ENGINE_DLL_RELEASE) {
+        message([win][engine][release] stage $$ENGINE_DLL_RELEASE -> $$DEST_DLL_DIR)
+        QMAKE_POST_LINK += $$quote(cmd /c copy /Y "$$ENGINE_DLL_RELEASE" "$$DEST_DLL_DIR\\mri_engine_v_1_1.dll" >nul)
+    } else {
+        message([win][engine][release][WARN] missing DLL: $$ENGINE_DLL_RELEASE)
+    }
+    exists($$DICOM_DLL_RELEASE) {
+        message([win][dicom ][release] stage $$DICOM_DLL_RELEASE -> $$DEST_DLL_DIR)
+        QMAKE_POST_LINK += $$quote(cmd /c copy /Y "$$DICOM_DLL_RELEASE" "$$DEST_DLL_DIR\\dicom_io_lib.dll" >nul)
+    } else {
+        message([win][dicom ][release][WARN] missing DLL: $$DICOM_DLL_RELEASE)
+    }
+
+    # OpenCV runtime (release)
+    QMAKE_POST_LINK += $$quote(cmd /c xcopy /Y /I /Q "C:/opencv/opencv/build/x64/vc16/bin/opencv_world490.dll" "$$DEST_DLL_DIR\\")
+
+    # vcpkg runtimes (release)
+    QMAKE_POST_LINK += $$quote(cmd /c xcopy /Y /I /Q "$$VCPKG_BINR\\ismrmrd*.dll" "$$DEST_DLL_DIR\\")
+    QMAKE_POST_LINK += $$quote(cmd /c xcopy /Y /I /Q "$$VCPKG_BINR\\pugixml*.dll" "$$DEST_DLL_DIR\\")
+    QMAKE_POST_LINK += $$quote(cmd /c xcopy /Y /I /Q "$$VCPKG_BINR\\hdf5*.dll"   "$$DEST_DLL_DIR\\")
+    QMAKE_POST_LINK += $$quote(cmd /c xcopy /Y /I /Q "$$VCPKG_BINR\\zlib*.dll"   "$$DEST_DLL_DIR\\")
+    QMAKE_POST_LINK += $$quote(cmd /c xcopy /Y /I /Q "$$VCPKG_BINR\\*aec*.dll"   "$$DEST_DLL_DIR\\")
+    QMAKE_POST_LINK += $$quote(cmd /c xcopy /Y /I /Q "$$VCPKG_BINR\\dcm*.dll"    "$$DEST_DLL_DIR\\")
+    QMAKE_POST_LINK += $$quote(cmd /c xcopy /Y /I /Q "$$VCPKG_BINR\\of*.dll"     "$$DEST_DLL_DIR\\")
+    QMAKE_POST_LINK += $$quote(cmd /c xcopy /Y /I /Q "$$VCPKG_BINR\\ijg*.dll"    "$$DEST_DLL_DIR\\")
+
+    # CUDA runtime DLLs (only if your engine needs them)
+    CUDA_PATH = C:/PROGRA~1/NVIDIA~2/CUDA/v12.4
+    QMAKE_POST_LINK += $$quote(cmd /c if exist "$$CUDA_PATH\\bin\\cudart64*.dll"   xcopy /Y /I /Q "$$CUDA_PATH\\bin\\cudart64*.dll"   "$$DEST_DLL_DIR\\")
+    QMAKE_POST_LINK += $$quote(cmd /c if exist "$$CUDA_PATH\\bin\\cufft64*.dll"    xcopy /Y /I /Q "$$CUDA_PATH\\bin\\cufft64*.dll"    "$$DEST_DLL_DIR\\")
+    QMAKE_POST_LINK += $$quote(cmd /c if exist "$$CUDA_PATH\\bin\\cublas64*.dll"   xcopy /Y /I /Q "$$CUDA_PATH\\bin\\cublas64*.dll"   "$$DEST_DLL_DIR\\")
+    QMAKE_POST_LINK += $$quote(cmd /c if exist "$$CUDA_PATH\\bin\\cublasLt64*.dll" xcopy /Y /I /Q "$$CUDA_PATH\\bin\\cublasLt64*.dll" "$$DEST_DLL_DIR\\")
+
+    QMAKE_POST_LINK += $$quote(cmd /c echo [stage] DLLs now in "$$DEST_DLL_DIR":)
+    QMAKE_POST_LINK += $$quote(cmd /c dir /b "$$DEST_DLL_DIR\\*.dll")
 }
+
+# ============================================================
+# LINUX / Jetson (aarch64 Ubuntu) — RELEASE
+# ============================================================
+unix:!win32 {
+    message([lin] ===== Linux/Jetson RELEASE configuration =====)
+
+    DEFINES += GLIMPSE_JETSON
+    DEFINES += HAVE_ISMRMRD
+    DEFINES += IO_ENABLE_DCMJPEG=1 IO_ENABLE_DCMJPLS=1 IO_ENABLE_DCMJ2K=0
+
+    # Toolchain defaults already set - just reinforce optimization & NDEBUG
+    QMAKE_CXXFLAGS += -O3 -DNDEBUG -fPIC
+    QMAKE_LFLAGS   += -Wl,--as-needed
+
+    # ---- Prefer pkg-config wherever possible ----
+    CONFIG += link_pkgconfig
+    PKGCONFIG += opencv4 ismrmrd pugixml
+    # HDF5 packages commonly present on Ubuntu/Jetson
+    PKGCONFIG += hdf5 hdf5_hl hdf5_cpp hdf5_hl_cpp
+
+    message([lin][pkg] using pkg-config: $$PKGCONFIG)
+
+    # ---- DCMTK: link components explicitly (common split on Ubuntu) ----
+    # If your DCMTK was built differently, adjust this list.
+    LIBS += -ldcmimgle -ldcmimage -ldcmdata -loflog -lofstd
+    LIBS += -ldcmjpeg -ldcmjpls
+    # Enable if you have JPEG2000:
+    # LIBS += -ldcmj2k -lopenjp2
+
+    # ---- MRI Engine & DICOM (GUI-local release .so) ----
+    # Expected filenames (adjust if your .so names differ)
+    ENGINE_SO_PATH = $$PWD/release/libmri_engine_v_1_1.so
+    DICOM_SO_PATH  = $$PWD/release/libdicom_io_lib.so
+
+    QMAKE_LIBDIR += $$PWD/release
+    message([lin][libdir] + $$PWD/release)
+
+    # Link using -l... only if the .so exists locally (keep build portable)
+    exists($$ENGINE_SO_PATH) {
+        LIBS += -L$$PWD/release -lmri_engine_v_1_1
+        message([lin][engine] +link -lmri_engine_v_1_1 (found $$ENGINE_SO_PATH))
+    } else {
+        message([lin][engine][WARN] engine .so not found at $$ENGINE_SO_PATH (skipping -l))
+    }
+
+    exists($$DICOM_SO_PATH) {
+        LIBS += -L$$PWD/release -ldicom_io_lib
+        message([lin][dicom ] +link -ldicom_io_lib (found $$DICOM_SO_PATH))
+    } else {
+        message([lin][dicom ][WARN] dicom .so not found at $$DICOM_SO_PATH (skipping -l))
+    }
+
+    # ---- RPATH so the app finds local engine/dicom .so at runtime ----
+    # Also include CUDA default location on Jetson.
+    CUDA_PATH = /usr/local/cuda
+    QMAKE_RPATHDIR += $$OUT_PWD/release $$PWD/release $$CUDA_PATH/lib64
+    QMAKE_LFLAGS   += -Wl,-rpath,$$OUT_PWD/release -Wl,-rpath,$$PWD/release -Wl,-rpath,$$CUDA_PATH/lib64
+
+    message([lin][rpath] OUT=$$OUT_PWD/release  PWD=$$PWD/release  CUDA=$$CUDA_PATH/lib64)
+
+    # ---- (Optional) post-link listing for visibility ----
+    DEST_SO_DIR = $$OUT_PWD/release
+    QMAKE_POST_LINK += echo "[stage] Linux release output in $$DEST_SO_DIR"
+    QMAKE_POST_LINK += && ls -1 "$$DEST_SO_DIR" || true
+}
+
+DISTFILES +=

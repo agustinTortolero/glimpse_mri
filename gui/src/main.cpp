@@ -191,7 +191,7 @@ Ui buildUi(simplelog::Logger& log, QSplashScreen* splash) {
     splashMessage(splash, "Wiring controller...");
     auto c = std::make_unique<AppController>(w.get());
 
-    w->setWindowTitle("Glimpse MRI --- alphaTest");
+    w->setWindowTitle("Glimpse MRI --- preRelease");
     log_and_print(log, "[DBG][Main] Window title set.");
     return { std::move(w), std::move(c) };
 }

@@ -61,3 +61,43 @@ graphics/build_icons/
 
 # temp note
 graphics/make icons.txt
+# ---- Qt / qmake / Creator ----
+*.pro.user
+*.qbs.user
+*.user
+*.qmake.stash
+*.qrc.depends
+*.qrc.release
+*.qrc.debug
+moc/
+ui_*.h
+
+# ---- Build trees ----
+**/build/
+**/debug/
+**/release/
+**/.vs/
+CMakeFiles/
+CMakeCache.txt
+
+# ---- Binaries and VS intermediates ----
+*.obj
+*.o
+*.dll
+*.lib
+*.pdb
+*.ilk
+*.iobj
+*.ipdb
+*.exe
+*.exp
+*.log
+
+# ---- Local/deploy output ----
+gui/dist/
+# keep your deploy script:
+!gui/deploy_win_release.ps1
+
+# ---- OS noise ----
+.DS_Store
+Thumbs.db

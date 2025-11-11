@@ -1,4 +1,4 @@
-#include "dicom_dll.hpp"
+#include "dicom_interface.hpp"
 #include <QCoreApplication>
 #include <QDir>
 
@@ -12,13 +12,13 @@ bool DicomDll::load(const QString& explicitPath)
         const QString appDir = QCoreApplication::applicationDirPath();
         QStringList attempts;
 #ifdef _WIN32
-        attempts << (appDir + "/dicom__io_lib")   // Qt appends .dll automatically
-                 << "dicom__io_lib"
-                 << (QDir::currentPath() + "/dicom__io_lib");
+        attempts << (appDir + "/dicom_io_libd")   // Qt appends .dll automatically
+                 << "dicom_io_libd"
+                 << (QDir::currentPath() + "/dicom_io_libd");
 #else
-        attempts << (appDir + "/libdicom__io_lib.so")
-                 << "libdicom__io_lib.so"
-                 << (QDir::currentPath() + "/libdicom__io_lib.so");
+        attempts << (appDir + "/libdicom_io_libd.so")
+                 << "libdicom_io_libd.so"
+                 << (QDir::currentPath() + "/libdicom_io_libd.so");
 #endif
         for (const auto& a : attempts) {
             std::cerr << "[DICOM][DLL][DBG] Trying to load: " << a.toStdString() << "\n";
@@ -32,7 +32,7 @@ bool DicomDll::load(const QString& explicitPath)
     }
 
     if (!lib.isLoaded()) {
-        std::cerr << "[DICOM][DLL][ERR] Could not load dicom__io_lib ("
+        std::cerr << "[DICOM][DLL][ERR] Could not load dicom_io_libd ("
                   << candidate.toStdString() << ") : "
                   << lib.errorString().toStdString() << "\n";
         return false;
@@ -67,7 +67,7 @@ bool DicomDll::load(const QString& explicitPath)
     }
 
     loaded = true;
-    std::cerr << "[DICOM][DLL][DBG] Loaded dicom__io_lib from: "
+    std::cerr << "[DICOM][DLL][DBG] Loaded dicom_io_libd from: "
               << lib.fileName().toStdString() << "\n";
     return true;
 }

@@ -17,7 +17,7 @@
 #include <QTimer>
 #include "../view/mainwindow.hpp"
 #include "../model/io.hpp"
-#include "../model/dicom_dll.hpp"
+#include "../model/dicom_interface.hpp"
 #include "../src/image_utils.hpp"
 #include "../view/progress_splash.hpp"
 #include <opencv2/core.hpp>

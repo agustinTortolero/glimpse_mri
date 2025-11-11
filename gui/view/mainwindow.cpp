@@ -1053,7 +1053,7 @@ void MainWindow::onSaveBatch()
 void MainWindow::showDragHint()
 {
     if (!m_label) return;
-    m_label->setText("Drag DICOM or HDF5\n(.dcm, .ima, .h5, .hdf5)\n—or a DICOM folder—");
+    m_label->setText("Drag DICOM or HDF5\n(.dcm, .h5, .hdf5)\n");
     qDebug() << "[DnD][View] drag hint shown";
 }
 
@@ -1140,15 +1140,16 @@ void MainWindow::addAboutDescription(QVBoxLayout* layout)
     }
 
     static const char* kAboutHtml = R"(
-<p><b>Glimpse MRI</b> is a high-performance MRI viewing and reconstruction application crafted for efficiency and designed to deliver powerful, reliable image handling. It supports <b>DICOM</b>, <b>ISMRMRD (HDF5)</b>, and <b>fastMRI</b> datasets, and can both view and write MRI images.</p>
+<p><b>Glimpse MRI</b> is a high-performance MRI reconstruction application with image viewing and writing capabilities. It supports <b>DICOM</b>, <b>ISMRMRD (HDF5)</b>, and <b>fastMRI</b> datasets.</p>
 
-<p>Developed using the <b>Model-View-Controller (MVC)</b> architecture, <b>Glimpse MRI</b> combines <b>C++</b>, <b>CUDA</b>, and <b>Qt</b> for a clean, responsive interface while delegating compute-intensive work to a <b>High-Performance Heterogeneous custom MRI Engine</b>.</p>
+<p>Built with <b>C++</b>, <b>CUDA</b>, and <b>Qt</b>, <b>Glimpse MRI</b> delivers a clean, responsive interface while offloading heavy computation to a custom <b>high-performance, heterogeneous MRI engine</b>.</p>
 
-<p>The MRI engine targets modern CPUs and GPUs—with multi-threading via <b>OpenMP</b>, CPU-side Fourier transforms using <b>FFTW (Fastest Fourier Transform in the West)</b>, and GPU acceleration through custom <b>CUDA</b> kernels, <b>NVIDIA cuFFT</b>, and <b>NVIDIA cuBLAS</b>. This heterogeneous pipeline enables fast reconstruction and smooth, real-time interaction on supported hardware.</p>
+<p>The engine targets modern CPUs and GPUs—multi-threading with <b>OpenMP</b>, CPU-side Fourier transforms with <b>FFTW (Fastest Fourier Transform in the West)</b>, and GPU acceleration via custom <b>CUDA</b> kernels plus <b>NVIDIA cuFFT</b> and <b>NVIDIA cuBLAS</b>—enabling fast reconstruction and smooth, real-time interaction.</p>
 
-<p>Built and designed by Agustin Tortolero.</p>
+<p>Designed and built by Agustin Tortolero.</p>
 <p><b>Source code</b>: <a href='https://github.com/agustinTortolero/GlimpseMRI'>github.com/agustinTortolero/GlimpseMRI</a></p>
 )";
+
 
     const QString description = QString::fromUtf8(kAboutHtml);
 
