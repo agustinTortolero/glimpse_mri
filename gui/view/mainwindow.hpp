@@ -22,6 +22,12 @@ class QVBoxLayout;
 class QMenu;
 class QAction;
 
+
+
+class QAction;
+
+
+
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
@@ -85,6 +91,8 @@ private slots:
     void onSliderValueChanged(int v);
     void onSavePNG();
     void onSaveBatch();
+    void onQuickSaveDicom();
+
 
 protected:
     bool eventFilter(QObject* obj, QEvent* ev) override;
@@ -97,6 +105,9 @@ protected:
     void dropEvent(QDropEvent* ev) override;
 
 private:
+
+
+    QAction* quickSaveDicom = nullptr;
 
     void buildUi();
     QWidget* createCentralArea();
@@ -139,6 +150,7 @@ private:
     struct CtxMenuActions {
         QAction* saveSlice = nullptr;
         QAction* saveBatch = nullptr;
+        QAction* quickSaveDicom  = nullptr;
         QAction* negative  = nullptr;
         QAction* startOver = nullptr;
         QAction* about     = nullptr;

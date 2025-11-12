@@ -695,13 +695,15 @@ void MainWindow::populateMenuForImage(QMenu& menu,
                                       bool hasMulti,
                                       bool hasImg)
 {
-    qDebug() << "[UI][Menu] populateMenuForImage hasImg=" << hasImg
+    qDebug() << "[UI][Menu] populateMenuForImage ENTER hasImg=" << hasImg
              << " hasMulti=" << hasMulti;
 
+    // Save options (unchanged)
     out.saveSlice = menu.addAction("Save slice...");
     out.saveBatch = menu.addAction("Save batch...");
     menu.addSeparator();
 
+    // View toggles
     out.negative  = menu.addAction("Negative");
     out.negative->setCheckable(true);
     out.negative->setChecked(m_negativeMode);
@@ -724,13 +726,35 @@ void MainWindow::populateMenuForImage(QMenu& menu,
     menu.addSeparator();
     out.startOver = menu.addAction("Start over");
 
+    // Enable/disable per context
     if (out.saveSlice) out.saveSlice->setEnabled(hasImg);
     if (out.saveBatch) out.saveBatch->setEnabled(hasImg && hasMulti);
+
+    qDebug() << "[UI][Menu] populateMenuForImage EXIT"
+             << " saveSlice=" << (out.saveSlice ? "Y" : "N")
+             << " saveBatch=" << (out.saveBatch ? "Y" : "N")
+             << " neg=" << (out.negative ? "Y" : "N")
+             << " startOver=" << (out.startOver ? "Y" : "N");
 }
+
+
+void MainWindow::onQuickSaveDicom()
+{
+    if (!m_hasImage || m_img8.empty()) {
+        qWarning() << "[UI] onQuickSaveDicom: no image to save";
+        return;
+    }
+    const QString autoPath; // empty => controller uses defaults
+    qDebug() << "[UI] onQuickSaveDicom: emit requestSaveDICOM(<auto>)";
+    emit requestSaveDICOM(autoPath);
+    if (statusBar()) statusBar()->showMessage("DICOM quick-saved (default path).", 2000);
+}
+
 
 
 void MainWindow::applyContextSelection(QAction* chosen, const CtxMenuActions& acts)
 {
+
     if (!chosen) { qDebug() << "[UI][Menu] no action selected"; return; }
 
     if (chosen->objectName() == QLatin1String("action_histogram")) {
@@ -1040,10 +1064,19 @@ void MainWindow::onSaveBatch()
         return;
     }
 
-    double px=0, py=0, sth=0, sbs=0;
-    QVector<double> iop6, ipp0;
-    if (!promptDicomSeriesGeometry(&px, &py, &sth, &sbs, &iop6, &ipp0)) return;
+    // Quick DICOM series (no geometry dialog)
+    double px  = 1.0, py  = 1.0;     // default PixelSpacing
+    double sth = 1.0, sbs = 1.0;     // default SliceThickness and SpacingBetweenSlices
+    QVector<double> iop6  = { 1, 0, 0, 0, 1, 0 };  // default IOP (rows = X, cols = Y)
+    QVector<double> ipp0  = { 0, 0, 0 };          // default IPP for slice #1
+
+    qDebug() << "[Save][Batch-DICOM] QUICK no-geometry:"
+             << "px=" << px << "py=" << py
+             << "thick=" << sth << "spacing=" << sbs
+             << "IOP6=" << iop6 << "IPP0=" << ipp0;
+
     emitDicomSeries(basePath, px, py, sth, sbs, iop6, ipp0);
+
 
     const QString dir = QFileInfo(basePath).absolutePath();
     if (statusBar()) statusBar()->showMessage(

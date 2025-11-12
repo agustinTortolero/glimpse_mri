@@ -23,6 +23,21 @@
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 
+#include <QStandardPaths>
+#include <QDir>
+#include <QStatusBar>  // <-- needed to call showMessage()
+
+
+
+static inline int digits_for_padding_int(int S) {
+    if (S >= 100000) return 6;
+    if (S >= 10000)  return 5;
+    if (S >= 1000)   return 4;
+    if (S >= 100)    return 3;
+    return 2;
+}
+
+
 static void engine_progress_tramp(int pct, const char* stage, void* user)
 {
     auto* self = reinterpret_cast<AppController*>(user);
@@ -90,6 +105,23 @@ AppController::AppController(MainWindow* view)
         qDebug() << "[CTRL][FX] requestApplyNegative -> toggleNegative()";
         this->toggleNegative();
     });
+
+    QObject::connect(m_view, &MainWindow::requestSaveDICOMSeriesMR, m_view,
+                     [this](const QString& basePath,
+                            double px, double py,
+                            double sth, double sbs,
+                            const QVector<double>& iop6,
+                            const QVector<double>& ipp0)
+                     {
+                         qDebug() << "[CTRL][Batch-DICOM] requestSaveDICOMSeriesMR ->"
+                                  << "basePath=" << basePath
+                                  << "px=" << px << "py=" << py
+                                  << "thick=" << sth << "spacing=" << sbs
+                                  << "iop6.len=" << iop6.size() << " ipp0.len=" << ipp0.size();
+                         this->saveDICOMSeriesMR(basePath, px, py, sth, sbs, iop6, ipp0);
+                     });
+
+
 
     bindStep(QKeySequence(Qt::Key_Up), -1);
     bindStep(QKeySequence(Qt::Key_Left), -1);
@@ -424,11 +456,218 @@ void AppController::savePNG(const QString& outPath)
 
 void AppController::saveDICOM(const QString& outPath)
 {
-    if (m_lastImg8.empty() || m_lastImg8.type() != CV_8UC1) return;
-    const std::string path_local8 = outPath.toLocal8Bit().constData();
+    qDebug() << "[CTRL] saveDICOM ENTER outPath =" << (outPath.isEmpty() ? "<empty>" : outPath);
+
+    // 1) Choose which image to save (current slice if stack, else last shown)
+    cv::Mat src;
+    const bool hasStack = !m_slices8.empty();
+    if (hasStack) {
+        const int n   = static_cast<int>(m_slices8.size());
+        const int idx = std::clamp(m_currentSlice, 0, n - 1);
+        qDebug() << "[CTRL] saveDICOM: stack detected  S=" << n << "  idx=" << idx;
+        src = m_slices8[idx];
+    } else {
+        qDebug() << "[CTRL] saveDICOM: single image path";
+        src = m_lastImg8;
+    }
+
+    if (src.empty()) {
+        qWarning() << "[CTRL][WRN] saveDICOM aborted: no image to save";
+        return;
+    }
+    if (src.type() != CV_8UC1) {
+        qWarning() << "[CTRL][WRN] saveDICOM: image type=" << src.type()
+        << " expected CV_8UC1; attempting to continue";
+    }
+
+    // 2) Resolve target path
+    QString target = outPath.trimmed();
+
+    // If caller gave a NON-empty path and we have multiple slices,
+    // and the target looks like a directory or base name w/o extension,
+    // DELEGATE to batch writer.
+    if (!target.isEmpty() && hasStack) {
+        QFileInfo tfi(target);
+        const bool looksLikeDir =
+            tfi.isDir()
+            || QDir(target).exists()
+            || target.endsWith('/') || target.endsWith('\\')
+            || tfi.suffix().isEmpty();   // no extension provided
+
+        if (looksLikeDir) {
+            qDebug() << "[CTRL] saveDICOM: multi-slice + dir-like target -> saveDICOMSeriesMR(defaults)";
+            const QVector<double> iop6{ 1, 0, 0, 0, 1, 0 };
+            const QVector<double> ipp0{ 0, 0, 0 };
+            saveDICOMSeriesMR(target, /*px*/1.0, /*py*/1.0, /*sliceThickness*/1.0, /*spacingBetween*/1.0, iop6, ipp0);
+            qDebug() << "[CTRL] saveDICOM EXIT (delegated to series)";
+            return;
+
+        }
+    }
+
+    // Default path if empty or "<auto>"
+    if (target.isEmpty() || target == QLatin1String("<auto>")) {
+        // Base directory: prefer the source folder; else Pictures; else app dir
+        QString baseDir;
+        if (!m_sourcePathQ.isEmpty()) {
+            QFileInfo fi(m_sourcePathQ);
+            baseDir = fi.absolutePath();
+        }
+        if (baseDir.isEmpty()) {
+            baseDir = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
+        }
+        if (baseDir.isEmpty()) {
+            baseDir = QCoreApplication::applicationDirPath();
+        }
+
+        // File name: timestamp + (optional) slice index
+        const QString ts = QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
+        QString fname;
+        if (hasStack) {
+            const int idx = std::clamp(m_currentSlice, 0, int(m_slices8.size()) - 1);
+            fname = QString("glimpse_%1_slice_%2.dcm")
+                        .arg(ts)
+                        .arg(idx + 1, 3, 10, QLatin1Char('0')); // 001, 002, ...
+        } else {
+            fname = QString("glimpse_%1.dcm").arg(ts);
+        }
+
+        target = QDir(baseDir).filePath(fname);
+        qDebug() << "[CTRL] saveDICOM: default path selected ->" << target;
+    } else {
+        // Force .dcm extension if none or wrong
+        QFileInfo fi(target);
+        if (fi.suffix().isEmpty() || fi.suffix().compare("dcm", Qt::CaseInsensitive) != 0) {
+            target = fi.absolutePath().isEmpty()
+            ? (fi.completeBaseName() + ".dcm")
+            : QDir(fi.absolutePath()).filePath(fi.completeBaseName() + ".dcm");
+            qDebug() << "[CTRL] saveDICOM: enforced .dcm extension ->" << target;
+        }
+    }
+
+    // 3) Ensure directory exists
+    const QString dirPath = QFileInfo(target).absolutePath();
+    if (!dirPath.isEmpty()) {
+        const bool mk = QDir().mkpath(dirPath);
+        qDebug() << "[CTRL] saveDICOM: ensuring dir =" << dirPath << " ok=" << mk;
+    }
+
+    // 4) Write the single DICOM
     std::string why;
-    io::write_dicom_sc_gray8(path_local8, m_lastImg8, &why);
+    const std::string path_local8 = target.toLocal8Bit().constData();
+    const bool ok = io::write_dicom_sc_gray8(path_local8, src, &why);
+    if (!ok) {
+        qWarning() << "[CTRL][ERR] saveDICOM failed:" << QString::fromStdString(why)
+        << " path=" << target;
+    } else {
+        qDebug() << "[CTRL] saveDICOM OK ->" << target;
+    }
+
+    qDebug() << "[CTRL] saveDICOM EXIT";
 }
+
+static inline int pad_width_for_count(int S) {
+    if (S >= 100000) return 6;
+    if (S >= 10000)  return 5;
+    if (S >= 1000)   return 4;
+    if (S >= 100)    return 3;
+    return 2;
+}
+
+void AppController::saveDICOMSeriesMR(const QString& basePath,
+                                      double px, double py,
+                                      double sliceThickness,
+                                      double spacingBetween,
+                                      const QVector<double>& iop6,
+                                      const QVector<double>& ipp0)
+{
+    qDebug() << "[CTRL][Batch-DICOM] ENTER basePath=" << basePath;
+
+    if (m_slices8.empty()) {
+        qWarning() << "[CTRL][Batch-DICOM][WRN] no slices in controller (m_slices8.empty)";
+        return;
+    }
+    const int S = static_cast<int>(m_slices8.size());
+    const int pad = pad_width_for_count(S);
+
+    // Resolve output directory + stem + ext
+    QFileInfo fi(basePath);
+    QString dir, stem, ext;
+
+    const bool pathExists = fi.exists();
+    const bool isDirLike  = (pathExists && fi.isDir())
+                           || QDir(basePath).exists()
+                           || fi.suffix().isEmpty();
+
+    if (basePath.trimmed().isEmpty() || isDirLike) {
+        // Use directory (or compute a default)
+        dir = isDirLike ? fi.absoluteFilePath() : QString();
+        if (dir.isEmpty() || !QDir(dir).exists()) {
+            if (!m_sourcePathQ.isEmpty()) dir = QFileInfo(m_sourcePathQ).absolutePath();
+            if (dir.isEmpty()) dir = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
+            if (dir.isEmpty()) dir = QCoreApplication::applicationDirPath();
+        }
+        // Make a subfolder per export (keeps things tidy)
+        const QString ts = QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
+        dir  = QDir(dir).filePath(QString("dicom_series_%1").arg(ts));
+        stem = QStringLiteral("slice");
+        ext  = QStringLiteral("dcm");
+    } else {
+        // Treat basePath as a file like ".../seriesName.dcm" -> use name as stem
+        dir  = fi.absolutePath();
+        stem = fi.completeBaseName();
+        ext  = fi.suffix().isEmpty() ? QStringLiteral("dcm") : fi.suffix().toLower();
+    }
+
+    // Ensure output directory exists
+    if (!dir.isEmpty()) {
+        const bool mk = QDir().mkpath(dir);
+        qDebug() << "[CTRL][Batch-DICOM] mkpath(" << dir << ") ->" << mk;
+    }
+
+    // Log geometry (not used by SC writer, but kept for future MR writer)
+    qDebug() << "[CTRL][Batch-DICOM] geometry:"
+             << "px=" << px << "py=" << py
+             << "sliceThickness=" << sliceThickness
+             << "spacingBetween=" << spacingBetween
+             << "IOP6=" << iop6
+             << "IPP0=" << ipp0;
+
+    int saved = 0;
+    for (int k = 0; k < S; ++k) {
+        const cv::Mat& src = m_slices8[k];
+        if (src.empty()) {
+            qWarning() << "[CTRL][Batch-DICOM][WRN] slice" << k << "is empty; skipping";
+            continue;
+        }
+        const QString idx = QString("%1").arg(k + 1, pad, 10, QLatin1Char('0'));
+        const QString fileName = QString("%1_%2.%3").arg(stem, idx, ext);
+        const QString outPathK = QDir(dir).filePath(fileName);
+
+        std::string why;
+        const std::string path_local8 = outPathK.toLocal8Bit().constData();
+        const bool ok = io::write_dicom_sc_gray8(path_local8, src, &why);
+        if (!ok) {
+            qWarning() << "[CTRL][Batch-DICOM][ERR] write_dicom_sc_gray8 failed k=" << k
+                       << " ->" << outPathK
+                       << " why=" << QString::fromStdString(why);
+        } else {
+            ++saved;
+            if (k < 3 || k == S - 1) qDebug() << "[CTRL][Batch-DICOM] OK ->" << outPathK;
+        }
+    }
+
+    qDebug() << "[CTRL][Batch-DICOM] EXIT saved=" << saved << "/" << S
+             << " dir=" << dir;
+
+    if (m_view && saved > 0 && m_view->statusBar()) {
+        m_view->statusBar()->showMessage(
+            QString("Saved %1 DICOM file(s) to %2").arg(saved).arg(dir), 3000);
+    }
+}
+
+
+
 
 void AppController::onSliceChanged(int idx)
 {
@@ -976,3 +1215,13 @@ void AppController::scheduleOrDoDicomMetadataRead(const std::string& path)
                        m_view ? static_cast<QObject*>(m_view) : static_cast<QObject*>(qApp),
                        std::move(task));
 }
+
+
+void AppController::saveDICOMBatch(const QString& outPath)
+{
+    qDebug() << "[CTRL][Batch-DICOM] WRAPPER -> saveDICOMSeriesMR(defaults) outPath=" << outPath;
+    const QVector<double> iop6{ 1, 0, 0, 0, 1, 0 };
+    const QVector<double> ipp0{ 0, 0, 0 };
+    saveDICOMSeriesMR(outPath, 1.0, 1.0, 1.0, 1.0, iop6, ipp0);
+}
+

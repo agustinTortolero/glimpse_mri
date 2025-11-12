@@ -27,6 +27,14 @@ public:
     ~AppController();
 
 
+    void saveDICOMBatch(const QString& outPath);
+    void saveDICOMSeriesMR(const QString& basePath,
+                           double px, double py,
+                           double sliceThickness,
+                           double spacingBetween,
+                           const QVector<double>& iop6,
+                           const QVector<double>& ipp0);
+
     void load(const QString& pathQ);
     void show();
     void savePNG(const QString& outPath);
