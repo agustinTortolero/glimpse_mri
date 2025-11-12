@@ -20,10 +20,26 @@
 // ---- Your app headers (adjust if paths differ) ----
 #include "../view/mainwindow.hpp"
 #include "../controller/app_controller.hpp"
+#include "../model/engine_api.h"
+
 #include "logger.hpp"
 
 // ======================== Utilities & Qt log bridge =========================
 namespace {
+
+// ===== Engine → Qt logger bridge (line-oriented) ============================
+static void engineLogToApp(const char* line, void* user) {
+    // user is a simplelog::Logger*, pass it when registering
+    auto* lg = static_cast<simplelog::Logger*>(user);
+    if (!line) return;
+
+    // Mirror to stderr (so it shows in Qt Creator console)
+    std::cerr << line << "\n";
+
+    // Append to file logger
+    if (lg) lg->append(line);
+}
+
 
 simplelog::Logger* g_logger = nullptr;
 
@@ -221,6 +237,8 @@ int runEventLoop(QApplication& app, simplelog::Logger& log) {
 int main(int argc, char** argv) {
     auto log = createLogger();
     installQtLogBridge(log);
+    engine_set_log_cb(&engineLogToApp, &log);
+    log_and_print(log, "[DBG][Main] Engine log callback installed.");
 
     try {
         log_and_print(log, "[DBG] Qt app starting.");

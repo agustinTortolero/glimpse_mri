@@ -6,7 +6,7 @@
 //   ENGINE_HAS_CUDA=1      -> enable CUDA backend
 
 #include "engine_api.h"
-
+#include "common.hpp"  
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -14,6 +14,17 @@
 #include <vector>
 #include <complex>
 #include <algorithm>
+
+#include <chrono>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
+#if ENGINE_HAS_CUDA
+#include <cuda_runtime.h>
+#endif
+
+
 
 // --- Cross-platform debug sink ------------------------------------------------
 #if defined(_WIN32)
@@ -23,11 +34,15 @@
 #include <windows.h>
 static inline void platform_debug_output(const char* msg) {
     if (msg && *msg) {
+        // -> file via engine log callback
+        engine_log_line(msg);
+        // -> IDE / console
         std::fprintf(stderr, "%s\n", msg);
         OutputDebugStringA(msg);
         OutputDebugStringA("\n");
     }
 }
+
 template <typename... Args>
 static inline void platform_debug_printf(const char* fmt, Args... args) {
     char buf[2048];
@@ -36,13 +51,17 @@ static inline void platform_debug_printf(const char* fmt, Args... args) {
 }
 #else
 static inline void platform_debug_output(const char* msg) {
-    if (msg && *msg) std::fprintf(stderr, "%s\n", msg);
+    if (msg && *msg) {
+        engine_log_line(msg);          // file via callback
+        std::fprintf(stderr, "%s\n", msg); // console
+    }
 }
+
 template <typename... Args>
 static inline void platform_debug_printf(const char* fmt, Args... args) {
     char buf[2048];
     std::snprintf(buf, sizeof(buf), fmt ? fmt : "", args...);
-    std::fprintf(stderr, "%s\n", buf);
+    platform_debug_output(buf);
 }
 #endif
 
@@ -82,6 +101,9 @@ extern bool fft_and_rss_cuda(int C, int ny, int nx,
 // Internals
 // ============================================================================
 namespace {
+
+    enum class BackendUsed { CPU, CUDA };
+
 
     // --- Global state (simple, clarity-first) --------------------------------
     static int g_force_cpu = 0;    // 1 = force CPU path
@@ -272,7 +294,9 @@ namespace {
     }
 
     // --- Reconstruction dispatch ----------------------------------------------
-    static bool reconstruct_slice_rss(const ::KsGrid& ks, std::vector<float>& out_img, bool prefer_cuda, char* dbg, int cap) {
+    static bool reconstruct_slice_rss(const ::KsGrid& ks, std::vector<float>& out_img,
+        bool prefer_cuda, BackendUsed& used, char* dbg, int cap)
+    {
         out_img.clear();
         out_img.resize((size_t)ks.ny * ks.nx);
 
@@ -281,6 +305,7 @@ namespace {
             dbg_line(dbg, cap, "[DBG][ENGINE] trying CUDA backend");
             if (fft_and_rss_cuda(ks.coils, ks.ny, ks.nx, ks.host.data(), out_img)) {
                 dbg_line(dbg, cap, "[DBG][ENGINE] CUDA backend success");
+                used = BackendUsed::CUDA;
                 return true;
             }
             dbg_line(dbg, cap, "[DBG][ENGINE] CUDA backend failed -> falling back to CPU");
@@ -300,6 +325,7 @@ namespace {
             return false;
         }
         dbg_line(dbg, cap, "[DBG][ENGINE] CPU backend success");
+        used = BackendUsed::CPU;
         return true;
     }
 
@@ -326,6 +352,41 @@ extern "C" {
             device_id,
             env_force ? env_force : "null",
             g_force_cpu ? "true" : "false");
+#ifdef _OPENMP
+        {
+            int threads = omp_get_max_threads();
+            platform_debug_printf("[DBG][ENGINE][OMP] enabled, max_threads=%d", threads);
+        }
+#else
+        platform_debug_output("[DBG][ENGINE][OMP] disabled at build");
+#endif
+
+#if ENGINE_HAS_CUDA
+        if (!g_force_cpu) {
+            int ndev = 0;
+            cudaError_t ce = cudaGetDeviceCount(&ndev);
+            if (ce == cudaSuccess && ndev > 0) {
+                int want = (g_device_id >= 0 && g_device_id < ndev) ? g_device_id : 0;
+                cudaSetDevice(want);
+                cudaDeviceProp p{};
+                cudaGetDeviceProperties(&p, want);
+                platform_debug_printf("[DBG][ENGINE][CUDA] using device %d: %s  cc=%d.%d  mem=%.2f GB",
+                    want, p.name, p.major, p.minor, p.totalGlobalMem / (1024.0 * 1024.0 * 1024.0));
+            }
+            else {
+                platform_debug_printf("[DBG][ENGINE][CUDA] unavailable (err=%d or count=%d) -> CPU mode",
+                    (int)ce, ndev);
+                g_force_cpu = 1;
+            }
+        }
+        else {
+            platform_debug_output("[DBG][ENGINE][CUDA] forced CPU mode (device_id=-1 or MRI_FORCE_CPU)");
+        }
+#else
+        platform_debug_output("[DBG][ENGINE][CUDA] backend not compiled");
+#endif
+
+
 
         return 1; // success
     }
@@ -344,7 +405,9 @@ extern "C" {
         int fftshift,
         char* dbg, int dbg_cap)
     {
-        // Start clean to avoid junk (Windows/Unix)
+        using clock = std::chrono::high_resolution_clock;
+
+        // Start clean
         if (dbg && dbg_cap > 0) dbg[0] = '\0';
 
         // Args check
@@ -359,10 +422,10 @@ extern "C" {
 
         report_progress(1, "Start", dbg, dbg_cap);
         dbg_printf(dbg, dbg_cap,
-            "[DBG][ENGINE] reconstruct_all path=\"%s\" fftshift=%d backend=%s",
+            "[DBG][ENGINE] reconstruct_all path=\"%s\" fftshift=%d backend_pref=%s",
             path,
-            fftshift ? 1 : 0,
-            g_force_cpu ? "CPU" : "AUTO");
+            (fftshift ? 1 : 0),
+            (g_force_cpu ? "CPU" : "AUTO"));
 
         // Detect flavor
         DetectedInfo di{};
@@ -385,10 +448,10 @@ extern "C" {
                 di.flavor == Flavor::FastMRI ? "fastMRI" : "Unknown"));
 
         // Allocate output stack
-        const size_t imgN = (size_t)di.ny * (size_t)di.nx;
-        const size_t stackN = (size_t)di.S * imgN;
+        const size_t imgN = static_cast<size_t>(di.ny) * static_cast<size_t>(di.nx);
+        const size_t stackN = static_cast<size_t>(di.S) * imgN;
 
-        float* stack = (float*)std::malloc(stackN * sizeof(float));
+        float* stack = static_cast<float*>(std::malloc(stackN * sizeof(float)));
         if (!stack) {
             dbg_line(dbg, dbg_cap, "[ERR][ENGINE] malloc failed for output stack");
             report_progress(100, "Error: alloc", dbg, dbg_cap);
@@ -399,20 +462,27 @@ extern "C" {
         dbg_printf(dbg, dbg_cap, "[DBG][ENGINE] allocated %.3f MB",
             (double)(stackN * sizeof(float)) / (1024.0 * 1024.0));
 
-        // Process each slice
+        // Per-slice buffer
         std::vector<float> slice_img;
         slice_img.reserve(imgN);
 
-        // Reserve 10% pre/post, distribute 80% across slices
+        // Perf accumulators
+        double total_ms = 0.0;
+        double min_ms = std::numeric_limits<double>::infinity();
+        double max_ms = 0.0;
+        int cpu_slices = 0;
+        int gpu_slices = 0;
+
+        // Progress distribution: 10% pre/post, 80% across slices
         const int base = 10;
         const int span = 80;
         const int denom = (di.S > 0) ? di.S : 1;
 
         for (int s = 0; s < di.S; ++s) {
-            ::KsGrid ks;
+            ::KsGrid ks{};
             bool ok_load = false;
 
-            // --- Call engine ----------------------------------------------------------
+            // --- Load slice -----------------------------------------------------
             {
                 const int pct = base + (s * span) / denom;
                 report_progress(pct, "Load slice", dbg, dbg_cap);
@@ -422,7 +492,7 @@ extern "C" {
             if (di.flavor == Flavor::FastMRI) {
                 ok_load = load_slice_fastmri(path, s, ks, dbg, dbg_cap);
             }
-            else { // ISMRMRD
+            else {
                 ok_load = load_slice_ismrmrd(path, s, ks, dbg, dbg_cap);
             }
 
@@ -433,29 +503,67 @@ extern "C" {
                 return 0;
             }
 
-            // Reconstruct
+            // --- Reconstruct (timed) -------------------------------------------
             {
                 const int pct = base + ((s * span) + span / 2) / denom;
                 report_progress(pct, "Reconstruct", dbg, dbg_cap);
             }
 
             const bool prefer_cuda = (g_force_cpu == 0);
-            if (!reconstruct_slice_rss(ks, slice_img, prefer_cuda, dbg, dbg_cap)) {
+            BackendUsed used = BackendUsed::CPU;
+
+            const auto t1 = clock::now();
+
+            if (!reconstruct_slice_rss(ks,
+                slice_img,
+                prefer_cuda,
+                used,
+                dbg, dbg_cap))
+            {
                 dbg_printf(dbg, dbg_cap, "[ERR][ENGINE] reconstruction failed on slice %d", s);
                 std::free(stack);
                 report_progress(100, "Error: recon", dbg, dbg_cap);
                 return 0;
             }
 
+#if ENGINE_HAS_CUDA
+            if (used == BackendUsed::CUDA) {
+                cudaDeviceSynchronize(); // ensure kernels finished before timing
+            }
+#endif
+
+            const auto t2 = clock::now();
+            const double ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
+            total_ms += ms;
+            if (ms < min_ms) min_ms = ms;
+            if (ms > max_ms) max_ms = ms;
+
+            const char* backend = (used == BackendUsed::CUDA) ? "CUDA" : "CPU";
+            if (used == BackendUsed::CUDA) ++gpu_slices; else ++cpu_slices;
+
+            dbg_printf(dbg, dbg_cap,
+                "[PERF][ENGINE] slice %d/%d  time=%.3f ms  backend=%s  H=%d W=%d",
+                s + 1, di.S, ms, backend, ks.ny, ks.nx);
+
+            // Ensure size matches (defensive)
+            if (slice_img.size() != imgN) {
+                dbg_printf(dbg, dbg_cap,
+                    "[ERR][ENGINE] unexpected slice size: got=%zu expected=%zu",
+                    (size_t)slice_img.size(), imgN);
+                std::free(stack);
+                report_progress(100, "Error: size", dbg, dbg_cap);
+                return 0;
+            }
+
             if (fftshift) {
-                dbg_printf(dbg, dbg_cap, "[DBG][ENGINE][Shift] fftshift2d_inplace ny=%d nx=%d", ks.ny, ks.nx);
+                dbg_printf(dbg, dbg_cap, "[DBG][ENGINE][Shift] fftshift2d_inplace H=%d W=%d", ks.ny, ks.nx);
                 fftshift2d_inplace(slice_img.data(), ks.ny, ks.nx);
             }
 
-            // Pick the best available 8-bit image: prefer last shown; else current single; else current slice
+            // Pack into output stack
             std::memcpy(stack + (size_t)s * imgN, slice_img.data(), imgN * sizeof(float));
 
-            // Packed
+            // --- Pack / progress ------------------------------------------------
             {
                 const int pct = base + ((s + 1) * span) / denom;
                 report_progress(pct, "Pack", dbg, dbg_cap);
@@ -474,6 +582,12 @@ extern "C" {
         *outW = di.nx;
         *outStack = stack;
 
+        // Final PERF summary
+        const double avg_ms = (di.S > 0) ? (total_ms / (double)di.S) : 0.0;
+        dbg_printf(dbg, dbg_cap,
+            "[PERF][ENGINE] summary: slices=%d total=%.3f ms avg=%.3f ms min=%.3f ms max=%.3f ms  gpu_slices=%d cpu_slices=%d",
+            di.S, total_ms, avg_ms, (std::isfinite(min_ms) ? min_ms : 0.0), max_ms, gpu_slices, cpu_slices);
+
         // Legacy-compat return (1=ISMRMRD, 2=fastMRI)
         const int rc = (di.flavor == Flavor::ISMRMRD) ? 1 : 2;
 
@@ -481,6 +595,7 @@ extern "C" {
         dbg_printf(dbg, dbg_cap, "[DBG][ENGINE] done: S=%d H=%d W=%d rc=%d", *outS, *outH, *outW, rc);
         return rc;
     }
+
 
     ENGINE_API void engine_free(void* p) {
         if (!p) {

@@ -1,20 +1,23 @@
 ﻿// src/common.cpp — portable helpers (Windows / Ubuntu / Raspberry Pi)
-// Uses dbg_head(...) from common.hpp (do not redefine here)
 
-#include "common.hpp"
+#include "engine_api.h"   // engine_log_cb / ENGINE_API / ENGINE_CALL
+#include "common.hpp"     // dbg_head(...), KsGrid, xml_* decls
 
+#include <mutex>
+#include <cstdarg>
+#include <cstdio>
 #include <iostream>
 #include <sstream>
 #include <string>
 #include <vector>
 #include <stdexcept>
 
-// --- Feature flags (override in your build configuration if needed) ----------
+// --- Feature flags (override via build system if needed) ---------------------
 #if !defined(ENGINE_HAS_ISMRMRD)
 #define ENGINE_HAS_ISMRMRD 1
 #endif
 
-// PugiXML is header-only and required here for XML helpers
+// PugiXML for XML parsing
 #include <pugixml.hpp>
 
 // ISMRMRD only if enabled
@@ -22,10 +25,41 @@
 #include <ismrmrd/dataset.h>
 #endif
 
-// -----------------------------------------------------------------------------
+// ---------------- Engine log callback plumbing --------------------------------
+namespace {
+    std::mutex    g_log_mtx;
+    engine_log_cb g_cb = nullptr;
+    void* g_user = nullptr;
+}
+
+// Public C API: set/clear log callback
+extern "C" ENGINE_API void ENGINE_CALL engine_set_log_cb(engine_log_cb cb, void* user) {
+    std::lock_guard<std::mutex> lk(g_log_mtx);
+    g_cb = cb;
+    g_user = user;
+}
+
+// Internal helpers used by the engine to emit lines
+void engine_log_line(const char* line) {
+    std::lock_guard<std::mutex> lk(g_log_mtx);
+    if (g_cb) g_cb(line ? line : "", g_user);
+}
+
+void engine_logf(const char* fmt, ...) {
+    char buf[2048];
+    va_list ap; va_start(ap, fmt);
+#if defined(_MSC_VER)
+    _vsnprintf_s(buf, sizeof(buf), _TRUNCATE, fmt, ap);
+#else
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+#endif
+    va_end(ap);
+    engine_log_line(buf);
+}
+
+// --------------------- XML helpers -------------------------------------------
 // Small utility: walk a slash-separated path like "a/b/c" starting from node n.
 // Returns an empty node if not found.
-// -----------------------------------------------------------------------------
 namespace {
     static pugi::xml_node walk_path(const pugi::xml_node& n, const char* path) {
         if (!path || !*path) return n;
@@ -33,7 +67,6 @@ namespace {
         pugi::xml_node cur = n;
 
         while (*p) {
-            // read token until '/' or end
             const char* start = p;
             while (*p && *p != '/') ++p;
             std::string token(start, static_cast<size_t>(p - start));
@@ -45,11 +78,8 @@ namespace {
         }
         return cur;
     }
-} // namespace
+}
 
-// -----------------------------------------------------------------------------
-// XML getters (declared in common.hpp)
-// -----------------------------------------------------------------------------
 int xml_int(const pugi::xml_node& n, const char* path, int def) {
     auto t = walk_path(n, path);
     if (!t) {
@@ -98,9 +128,7 @@ const char* xml_str(const pugi::xml_node& n, const char* path, const char* def) 
     return v ? v : def;
 }
 
-// -----------------------------------------------------------------------------
-// Debug dumper for ISMRMRD header (safe to call; best-effort). Only prints.
-// -----------------------------------------------------------------------------
+// ---------------- ISMRMRD metadata dumper (optional) -------------------------
 #if ENGINE_HAS_ISMRMRD
 bool dump_ismrmrd_metadata(const std::string& path) {
     dbg_head("Meta"); std::cerr << "dump_ismrmrd_metadata path='" << path << "'\n";

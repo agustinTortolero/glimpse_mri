@@ -1139,7 +1139,9 @@ void MainWindow::addAboutDescription(QVBoxLayout* layout)
         return;
     }
 
+    // NOTE: Wrap everything in a div with text-align: justify
     static const char* kAboutHtml = R"(
+<div style='text-align: justify;'>
 <p><b>Glimpse MRI</b> is a high-performance MRI reconstruction application with image viewing and writing capabilities. It supports <b>DICOM</b>, <b>ISMRMRD (HDF5)</b>, and <b>fastMRI</b> datasets.</p>
 
 <p>Built with <b>C++</b>, <b>CUDA</b>, and <b>Qt</b>, <b>Glimpse MRI</b> delivers a clean, responsive interface while offloading heavy computation to a custom <b>high-performance, heterogeneous MRI engine</b>.</p>
@@ -1148,8 +1150,8 @@ void MainWindow::addAboutDescription(QVBoxLayout* layout)
 
 <p>Designed and built by Agustin Tortolero.</p>
 <p><b>Source code</b>: <a href='https://github.com/agustinTortolero/GlimpseMRI'>github.com/agustinTortolero/GlimpseMRI</a></p>
+</div>
 )";
-
 
     const QString description = QString::fromUtf8(kAboutHtml);
 
@@ -1159,7 +1161,16 @@ void MainWindow::addAboutDescription(QVBoxLayout* layout)
     browser->setReadOnly(true);
     browser->setStyleSheet("border: none; background: transparent;");
     browser->document()->setDefaultFont(QFont("Verdana", 10));
+
+    // Load HTML first
     browser->setHtml(description);
+    qDebug() << "[About][UI] HTML loaded into QTextBrowser";
+
+    // Force-justify at the document level as a fallback (helps if HTML changes later)
+    QTextOption opt = browser->document()->defaultTextOption();
+    opt.setAlignment(Qt::AlignJustify);
+    browser->document()->setDefaultTextOption(opt);
+    qDebug() << "[About][UI] Applied document default alignment: AlignJustify";
 
     layout->addWidget(browser);
     qDebug() << "[About][UI] addAboutDescription DONE widget=" << browser;

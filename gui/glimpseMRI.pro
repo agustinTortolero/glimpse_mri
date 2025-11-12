@@ -74,8 +74,11 @@ message([win][rc] using RC_FILE assets/app_win.rc)
     message([win][opencv] linking opencv_world490 + advapi32)
 
     # ---- MRI Engine & DICOM (GUI-local release libs) ----
-    ENGINE_LIB_RELEASE = $$PWD/release/mri_engine_v_1_1.lib
-    ENGINE_DLL_RELEASE = $$PWD/release/mri_engine_v_1_1.dll
+
+    ENGINE_LIB_RELEASE = $$PWD/../engine/build/Release/mri_engine_v_1_1.lib
+    ENGINE_DLL_RELEASE = $$PWD/../engine/build/Release/mri_engine_v_1_1.dll
+    LIBS += $$ENGINE_LIB_RELEASE
+
     DICOM_LIB_RELEASE  = $$PWD/release/dicom_io_lib.lib
     DICOM_DLL_RELEASE  = $$PWD/release/dicom_io_lib.dll
 
