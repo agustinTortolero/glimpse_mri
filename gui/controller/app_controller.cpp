@@ -216,13 +216,17 @@ void AppController::load(const QString& pathQ)
             if (!ok) { qWarning() << "[CTRL][LOAD] DICOM not admitted -> prepare_fallback"; prepare_fallback(); anyWorkToShow = true; }
             else      anyWorkToShow = true;
         } else {
-            qDebug() << "[CTRL][LOAD] HDF5 path -> reconstructAllSlicesFromDll";
+            qDebug() << "[CTRL][LOAD] HDF5 path -> reconstructAllSlicesFromLib";
             QElapsedTimer t; t.start();
-            const bool ok = reconstructAllSlicesFromDll(pathQ, /*fftshift=*/true);
-            qDebug() << "[CTRL][LOAD] DLL recon ok=" << ok << " ms=" << t.elapsed();
-            if (!ok) { qWarning() << "[CTRL][LOAD] DLL recon failed -> prepare_fallback"; prepare_fallback(); }
+            const bool ok = reconstructAllSlicesFromLib(pathQ, /*fftshift=*/true);
+            qDebug() << "[CTRL][LOAD] LIB recon ok=" << ok << " ms=" << t.elapsed();
+            if (!ok) {
+                qWarning() << "[CTRL][LOAD] LIB recon failed -> prepare_fallback";
+                prepare_fallback();
+            }
             anyWorkToShow = true;
         }
+
 
         qDebug() << "[CTRL][LOAD] busy-leave";
     }
@@ -233,82 +237,169 @@ void AppController::load(const QString& pathQ)
     qDebug() << "[CTRL][LOAD] exit";
 }
 
-bool AppController::reconstructAllSlicesFromDll(const QString& pathQ, bool fftshift)
-{
-    qDebug() << "[DBG][DLL] reconstructAllSlicesFromDll path=" << pathQ << " fftshift=" << fftshift;
-    if (!m_splash) m_splash = new ProgressSplash(m_view);
-    const QString title = QStringLiteral("Reconstructing");
-    m_splash->start(title);
 
-    static std::once_flag s_once;
-    static int s_init_ok = 0;
-    std::call_once(s_once, [&](){
+
+bool AppController::failRecon(const QString& msg)
+{
+    qWarning() << "[LIB][FAIL]" << msg;
+
+    if (m_splash)
+        m_splash->updateProgress(0, "Failed");
+
+    closeSplashIfAny();
+
+    return false;
+}
+
+bool AppController::succeedRecon()
+{
+    if (m_splash)
+        m_splash->updateProgress(100, "Done");
+
+    closeSplashIfAny();
+
+    return true;
+}
+
+bool AppController::ensureEngineInitialized()
+{
+    static std::once_flag once;
+    static int init_ok = 0;
+
+    std::call_once(once, [&]() {
         const char* ver = engine_version();
-        qDebug() << "[DBG][DLL] engine_version ->" << (ver ? ver : "(null)");
-        s_init_ok = engine_init(0);
-        qDebug() << "[DBG][DLL] engine_init ->" << s_init_ok;
+        qDebug() << "[LIB] engine_version ->" << (ver ? ver : "(null)");
+        init_ok = engine_init(0);
+        qDebug() << "[LIB] engine_init ->" << init_ok;
     });
-    if (!s_init_ok) { qWarning() << "[DBG][DLL] engine_init failed; skipping DLL path"; closeSplashIfAny(); return false; }
+
+    return init_ok != 0;
+}
+
+bool AppController::runEngineReconstruction(const QString& pathQ,
+                                            bool fftshift,
+                                            std::vector<float>& host,
+                                            int& S, int& H, int& W)
+{
+    S = H = W = 0;
+    host.clear();
+
+    const QByteArray path8 = pathQ.toUtf8();
+
+    float* stack = nullptr;
+    char dbg[4096] = {0};
 
     engine_set_progress_cb(&engine_progress_tramp, this);
 
-    // --- Call engine ----------------------------------------------------------
-    int S = 0, H = 0, W = 0;
-    float* stack = nullptr;
-    char dbg[4096] = {0};
-    const QByteArray path8 = pathQ.toUtf8();
     const int ok = engine_reconstruct_all(
-        path8.constData(), &S, &H, &W, &stack, fftshift ? 1 : 0, dbg, int(sizeof(dbg)));
+        path8.constData(),
+        &S, &H, &W,
+        &stack,
+        fftshift ? 1 : 0,
+        dbg, sizeof(dbg)
+        );
 
     engine_set_progress_cb(nullptr, nullptr);
 
-    if (dbg[0] != '\0') qDebug().noquote() << "[DBG][DLL] " << dbg;
+    if (dbg[0] != '\0')
+        qDebug().noquote() << "[LIB][DBG]\n" << dbg;
 
-    if (!ok || !stack || S <= 0 || H <= 0 || W <= 0) {
-        qWarning() << "[DBG][DLL] reconstruct_all failed or invalid dims"
-                   << " ok=" << ok << " stack=" << (void*)stack
-                   << " S=" << S << " H=" << H << " W=" << W;
-        if (stack) engine_free(stack);
-        closeSplashIfAny();
+    if (!ok || !stack || S <= 0 || H <= 0 || W <= 0)
+    {
+        qWarning() << "[LIB] invalid reconstruction output"
+                   << "ok=" << ok << " stack=" << (void*)stack
+                   << "S=" << S << " H=" << H << " W=" << W;
+
+        if (stack)
+            engine_free(stack);
+
         return false;
     }
 
-    const size_t count = size_t(S) * size_t(H) * size_t(W);
-    std::vector<float> host(count);
+    // Copy data to vector
+    size_t count = size_t(S) * H * W;
+    host.resize(count);
     std::memcpy(host.data(), stack, count * sizeof(float));
+
     engine_free(stack);
 
-    adoptReconStackF32(host, S, H, W);
-    m_meta << QString("DLL: Slices=%1, Size=%2x%3").arg(S).arg(W).arg(H);
-
-    {
-        io::DicomMeta dm;
-        std::string whyMeta;
-        const std::string p = pathQ.toStdString();
-        if (io::read_hdf5_ismrmrd_meta(p, dm, &whyMeta)) {
-            if (!dm.manufacturer.empty())     m_meta << "Manufacturer: " + QString::fromStdString(dm.manufacturer);
-            if (!dm.modelName.empty())        m_meta << "Model: " + QString::fromStdString(dm.modelName);
-            if (!dm.institutionName.empty())  m_meta << "Institution: " + QString::fromStdString(dm.institutionName);
-            if (!dm.B0T.empty())              m_meta << "Field (T): " + QString::fromStdString(dm.B0T);
-            if (!dm.tr_ms.empty() || !dm.te_ms.empty() || !dm.ti_ms.empty()) {
-                const QString tr = QString::fromStdString(dm.tr_ms);
-                const QString te = QString::fromStdString(dm.te_ms);
-                const QString ti = QString::fromStdString(dm.ti_ms);
-                m_meta << QString("TR/TE/TI (ms): %1 / %2 / %3")
-                              .arg(tr.isEmpty() ? "-" : tr)
-                              .arg(te.isEmpty() ? "-" : te)
-                              .arg(ti.isEmpty() ? "-" : ti);
-            }
-        } else if (!whyMeta.empty()) {
-            qWarning() << "[DBG][H5][META] read failed:" << QString::fromStdString(whyMeta);
-        }
-    }
-
-    qDebug() << "[DBG][DLL] reconstructAllSlicesFromDll OK: S=" << S << " H=" << H << " W=" << W;
-    if (m_splash) m_splash->updateProgress(100, "Done");
-    closeSplashIfAny();
     return true;
 }
+
+void AppController::appendIsmrmrdMetadata(const QString& pathQ)
+{
+    io::DicomMeta dm;
+    std::string whyMeta;
+
+    if (!io::read_hdf5_ismrmrd_meta(pathQ.toStdString(), dm, &whyMeta))
+    {
+        if (!whyMeta.empty())
+            qWarning() << "[LIB][META] ISMRMRD read failed:" << QString::fromStdString(whyMeta);
+        return;
+    }
+
+    if (!dm.manufacturer.empty())
+        m_meta << "Manufacturer: " + QString::fromStdString(dm.manufacturer);
+
+    if (!dm.modelName.empty())
+        m_meta << "Model: " + QString::fromStdString(dm.modelName);
+
+    if (!dm.institutionName.empty())
+        m_meta << "Institution: " + QString::fromStdString(dm.institutionName);
+
+    if (!dm.B0T.empty())
+        m_meta << "Field (T): " + QString::fromStdString(dm.B0T);
+
+    if (!dm.tr_ms.empty() || !dm.te_ms.empty() || !dm.ti_ms.empty())
+    {
+        const QString tr = QString::fromStdString(dm.tr_ms);
+        const QString te = QString::fromStdString(dm.te_ms);
+        const QString ti = QString::fromStdString(dm.ti_ms);
+
+        m_meta << QString("TR/TE/TI (ms): %1 / %2 / %3")
+                      .arg(tr.isEmpty() ? "-" : tr)
+                      .arg(te.isEmpty() ? "-" : te)
+                      .arg(ti.isEmpty() ? "-" : ti);
+    }
+}
+
+
+bool AppController::reconstructAllSlicesFromLib(const QString& pathQ, bool fftshift)
+{
+    qDebug() << "[LIB] reconstructAllSlicesFromLib ENTER path=" << pathQ
+             << " fftshift=" << fftshift;
+
+    if (!m_splash)
+        m_splash = new ProgressSplash(m_view);
+
+    m_splash->start("Reconstructing");
+
+    // 1) Engine init ----------------------------------------------------------
+    if (!ensureEngineInitialized())
+        return failRecon("engine_init failed");
+
+    // 2) Run engine reconstruction --------------------------------------------
+    std::vector<float> host;
+    int S = 0, H = 0, W = 0;
+
+    if (!runEngineReconstruction(pathQ, fftshift, host, S, H, W))
+        return failRecon("engine_reconstruct_all failed");
+
+    // 3) Convert & adopt slices ------------------------------------------------
+    adoptReconStackF32(host, S, H, W);
+
+    m_meta << QString("LIB: Slices=%1, Size=%2x%3").arg(S).arg(W).arg(H);
+
+    // 4) Metadata enrichment ---------------------------------------------------
+    appendIsmrmrdMetadata(pathQ);
+
+    qDebug() << "[LIB] Reconstruction success S=" << S << " H=" << H << " W=" << W;
+
+    // 5) Finish ----------------------------------------------------------------
+    return succeedRecon();
+}
+
+
 
 void AppController::prepare_fallback()
 {
@@ -418,7 +509,7 @@ void AppController::showSlices(const std::vector<cv::Mat>& frames)
     if (m_slices8.empty()) { qWarning() << "[CTRL] showSlices: all frames empty"; return; }
 
     m_meta.clear();
-    m_meta << "Format: DICOM (stack via DLL)"
+    m_meta << "Format: DICOM (stack via lib)"
            << QString("Dims: %1x%2").arg(W).arg(H);
 
     if (m_view) {

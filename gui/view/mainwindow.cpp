@@ -41,6 +41,8 @@
 #include <QTextBrowser>
 #include <QFont>
 #include <QMessageBox>
+#include <QTabWidget>
+
 
 #include <memory>
 #include <iostream>
@@ -1149,19 +1151,59 @@ void MainWindow::showAboutDialog()
 
     QDialog dlg(this);
     dlg.setWindowTitle("About Glimpse MRI");
+
     auto* vbox = new QVBoxLayout(&dlg);
 
-    addAboutDescription(vbox);   // your text
-    addAboutBadges(vbox);        // badges go right below the text
+    // --- Tabs container ---
+    auto* tabs = new QTabWidget(&dlg);
+    tabs->setObjectName("aboutTabs");
 
+    // --- Overview tab (was: About) ---
+    auto* overviewPage   = new QWidget(tabs);
+    auto* overviewLayout = new QVBoxLayout(overviewPage);
+    overviewLayout->setContentsMargins(8, 8, 8, 8);
+    overviewLayout->setSpacing(8);
+
+    addAboutDescription(overviewLayout);
+    addAboutBadges(overviewLayout);
+
+    overviewPage->setLayout(overviewLayout);
+    tabs->addTab(overviewPage, tr("Overview"));
+
+    // --- Tools tab ---
+    auto* toolsPage   = new QWidget(tabs);
+    auto* toolsLayout = new QVBoxLayout(toolsPage);
+    toolsLayout->setContentsMargins(8, 8, 8, 8);
+    toolsLayout->setSpacing(8);
+
+    addToolsTab(toolsLayout);
+
+    toolsPage->setLayout(toolsLayout);
+    tabs->addTab(toolsPage, tr("Tools"));
+
+    // --- Disclaimer tab ---
+    auto* discPage   = new QWidget(tabs);
+    auto* discLayout = new QVBoxLayout(discPage);
+    discLayout->setContentsMargins(8, 8, 8, 8);
+    discLayout->setSpacing(8);
+
+    addDisclaimerTab(discLayout);
+
+    discPage->setLayout(discLayout);
+    tabs->addTab(discPage, tr("Disclaimer"));
+
+    vbox->addWidget(tabs);
+
+    // --- Buttons ---
     auto* bb = new QDialogButtonBox(QDialogButtonBox::Ok, &dlg);
     QObject::connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
     vbox->addWidget(bb);
 
-    dlg.resize(560, 400);
+    dlg.resize(600, 420);
     const int rc = dlg.exec();
     qDebug() << "[About][UI] showAboutDialog EXIT rc=" << rc;
 }
+
 
 
 void MainWindow::addAboutDescription(QVBoxLayout* layout)
@@ -1172,19 +1214,19 @@ void MainWindow::addAboutDescription(QVBoxLayout* layout)
         return;
     }
 
-    // NOTE: Wrap everything in a div with text-align: justify
     static const char* kAboutHtml = R"(
 <div style='text-align: justify;'>
 <p><b>Glimpse MRI</b> is a high-performance MRI reconstruction application with image viewing and writing capabilities. It supports <b>DICOM</b>, <b>ISMRMRD (HDF5)</b>, and <b>fastMRI</b> datasets.</p>
 
 <p>Built with <b>C++</b>, <b>CUDA</b>, and <b>Qt</b>, <b>Glimpse MRI</b> delivers a clean, responsive interface while offloading heavy computation to a custom <b>high-performance, heterogeneous MRI engine</b>.</p>
 
-<p>The engine targets modern CPUs and GPUs—multi-threading with <b>OpenMP</b>, CPU-side Fourier transforms with <b>FFTW (Fastest Fourier Transform in the West)</b>, and GPU acceleration via custom <b>CUDA</b> kernels plus <b>NVIDIA cuFFT</b> and <b>NVIDIA cuBLAS</b>—enabling fast reconstruction and smooth, real-time interaction.</p>
+<p>The engine targets modern CPUs and GPUs—multi-threading with <b>OpenMP</b>, CPU-side Fourier transforms with <b>FFTW (Fastest Fourier Transform in the West)</b>, and GPU acceleration via custom <b>CUDA</b> kernels plus <b>NVIDIA cuFFT</b> and <b>NVIDIA cuBLAS</b>, enabling fast reconstruction and smooth, real-time interaction.</p>
 
 <p>Designed and built by Agustin Tortolero.</p>
 <p><b>Source code</b>: <a href='https://github.com/agustinTortolero/GlimpseMRI'>github.com/agustinTortolero/GlimpseMRI</a></p>
 </div>
 )";
+
 
     const QString description = QString::fromUtf8(kAboutHtml);
 
@@ -1295,3 +1337,104 @@ void MainWindow::addAboutBadges(QVBoxLayout* layout)
     QStringList order; for (const auto& L : logos) order << L.alt;
     qDebug() << "[About][UI] addAboutBadges DONE; order=" << order.join(" -> ");
 }
+
+
+void MainWindow::addDisclaimerTab(QVBoxLayout* layout)
+{
+    qDebug() << "[About][UI] addDisclaimerTab ENTER layout?" << (layout ? "YES" : "NO");
+    if (!layout) {
+        qWarning() << "[About][UI][WRN] addDisclaimerTab called with null layout";
+        return;
+    }
+
+    static const char* kDisclaimerHtml = R"(
+<div style='text-align: justify;'>
+<p><b>Non-clinical software:</b> Glimpse MRI is intended solely for research, testing, and software development. It is <b>not a medical device</b>.</p>
+
+<p>This application must not be used for diagnosis, treatment decisions, or any clinical workflow involving patients. Any images, reconstructions, or measurements produced are for demonstration and technical evaluation only.</p>
+
+<p>No guarantee is made regarding the correctness, completeness, or suitability of the results for clinical purposes. By using this software, you acknowledge that it is provided &quot;as is&quot;, without any warranty of any kind.</p>
+</div>
+)";
+
+    const QString html = QString::fromUtf8(kDisclaimerHtml);
+
+    auto* browser = new QTextBrowser();
+    browser->setObjectName("aboutDisclaimer");
+    browser->setOpenExternalLinks(true);
+    browser->setReadOnly(true);
+    browser->setStyleSheet("border: none; background: transparent;");
+    browser->document()->setDefaultFont(QFont("Verdana", 10));
+
+    browser->setHtml(html);
+    qDebug() << "[About][UI] Disclaimer HTML loaded into QTextBrowser";
+
+    QTextOption opt = browser->document()->defaultTextOption();
+    opt.setAlignment(Qt::AlignJustify);
+    browser->document()->setDefaultTextOption(opt);
+    qDebug() << "[About][UI] Applied document default alignment: AlignJustify (Disclaimer)";
+
+    layout->addWidget(browser);
+    qDebug() << "[About][UI] addDisclaimerTab DONE widget=" << browser;
+}
+
+void MainWindow::addToolsTab(QVBoxLayout* layout)
+{
+    qDebug() << "[About][UI] addToolsTab ENTER layout?" << (layout ? "YES" : "NO");
+    if (!layout) {
+        qWarning() << "[About][UI][WRN] addToolsTab called with null layout";
+        return;
+    }
+
+    static const char* kToolsHtml = R"(
+<div style='text-align: justify;'>
+  <h3>Core technologies</h3>
+  <ul>
+    <li><b>C++</b> (modern C++ for core engine and GUI)</li>
+    <li><b>CUDA</b> for GPU-accelerated MRI reconstruction</li>
+    <li><b>Qt 6</b> for the cross-platform GUI</li>
+    <li><b>OpenMP</b> for multi-threaded CPU execution</li>
+    <li><b>FFTW</b> (Fastest Fourier Transform in the West) for CPU-side FFTs</li>
+    <li><b>NVIDIA cuFFT</b> and <b>NVIDIA cuBLAS</b> for GPU FFTs and BLAS operations</li>
+  </ul>
+
+  <h3>Data formats &amp; imaging libraries</h3>
+  <ul>
+    <li><b>DICOM</b> via a dedicated DICOM I/O library</li>
+    <li><b>ISMRMRD (HDF5)</b> for raw MRI acquisitions</li>
+    <li><b>fastMRI</b> single-coil datasets</li>
+    <li><b>HDF5</b> and <b>HDF5 C++</b> APIs</li>
+    <li><b>pugixml</b> for XML metadata handling</li>
+  </ul>
+
+  <h3>Development tools</h3>
+  <ul>
+    <li><b>Microsoft Visual Studio 2022</b> (MSVC toolchain, engine build)</li>
+    <li><b>Qt Creator</b> (Qt 6 project, GUI build and deployment)</li>
+    <li><b>qmake</b> for build configuration and project orchestration</li>
+  </ul>
+
+</div>
+)";
+
+    const QString html = QString::fromUtf8(kToolsHtml);
+
+    auto* browser = new QTextBrowser();
+    browser->setObjectName("aboutTools");
+    browser->setOpenExternalLinks(true);
+    browser->setReadOnly(true);
+    browser->setStyleSheet("border: none; background: transparent;");
+    browser->document()->setDefaultFont(QFont("Verdana", 10));
+
+    browser->setHtml(html);
+    qDebug() << "[About][UI] Tools HTML loaded into QTextBrowser";
+
+    QTextOption opt = browser->document()->defaultTextOption();
+    opt.setAlignment(Qt::AlignJustify);
+    browser->document()->setDefaultTextOption(opt);
+    qDebug() << "[About][UI] Applied document default alignment: AlignJustify (Tools)";
+
+    layout->addWidget(browser);
+    qDebug() << "[About][UI] addToolsTab DONE widget=" << browser;
+}
+

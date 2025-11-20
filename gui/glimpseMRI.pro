@@ -75,8 +75,8 @@ message([win][rc] using RC_FILE assets/app_win.rc)
 
     # ---- MRI Engine & DICOM (GUI-local release libs) ----
 
-    ENGINE_LIB_RELEASE = $$PWD/../engine/build/Release/mri_engine_v_1_1.lib
-    ENGINE_DLL_RELEASE = $$PWD/../engine/build/Release/mri_engine_v_1_1.dll
+    ENGINE_LIB_RELEASE = $$PWD/../engine/build/Release/mri_engine.lib
+    ENGINE_DLL_RELEASE = $$PWD/../engine/build/Release/mri_engine.dll
     LIBS += $$ENGINE_LIB_RELEASE
 
     DICOM_LIB_RELEASE  = $$PWD/release/dicom_io_lib.lib
@@ -86,11 +86,12 @@ message([win][rc] using RC_FILE assets/app_win.rc)
     message([win][libdir] + $$PWD/release)
 
     exists($$ENGINE_LIB_RELEASE) {
-        LIBS += "$$ENGINE_LIB_RELEASE"
-        message([win][engine][release] +link $$ENGINE_LIB_RELEASE)
+       LIBS += "$$ENGINE_LIB_RELEASE"
+       message([win][engine][release] +link $$ENGINE_LIB_RELEASE)
     } else {
-        message([win][engine][release][ERR] missing import lib: $$ENGINE_LIB_RELEASE)
+      message([win][engine][release][ERR] missing import lib: $$ENGINE_LIB_RELEASE)
     }
+
 
     exists($$DICOM_LIB_RELEASE) {
         LIBS += "$$DICOM_LIB_RELEASE"
@@ -119,8 +120,9 @@ message([win][rc] using RC_FILE assets/app_win.rc)
     QMAKE_POST_LINK += $$quote(cmd /c echo [stage] Copying runtime DLLs -> "$$DEST_DLL_DIR")
 
     exists($$ENGINE_DLL_RELEASE) {
-        message([win][engine][release] stage $$ENGINE_DLL_RELEASE -> $$DEST_DLL_DIR)
-        QMAKE_POST_LINK += $$quote(cmd /c copy /Y "$$ENGINE_DLL_RELEASE" "$$DEST_DLL_DIR\\mri_engine_v_1_1.dll" >nul)
+     message([win][engine][release] stage $$ENGINE_DLL_RELEASE -> $$DEST_DLL_DIR)
+     # [DBG] Keep original file name from ENGINE_DLL_RELEASE (mri_engine.dll)
+        QMAKE_POST_LINK += $$quote(cmd /c copy /Y "$$ENGINE_DLL_RELEASE" "$$DEST_DLL_DIR\\" >nul)
     } else {
         message([win][engine][release][WARN] missing DLL: $$ENGINE_DLL_RELEASE)
     }
@@ -186,16 +188,17 @@ unix:!win32 {
 
     # ---- MRI Engine & DICOM (GUI-local release .so) ----
     # Expected filenames (adjust if your .so names differ)
-    ENGINE_SO_PATH = $$PWD/release/libmri_engine_v_1_1.so
+    # [DBG] Engine now built as versionless libmri_engine.so
+    ENGINE_SO_PATH = $$PWD/release/libmri_engine.so
     DICOM_SO_PATH  = $$PWD/release/libdicom_io_lib.so
 
     QMAKE_LIBDIR += $$PWD/release
     message([lin][libdir] + $$PWD/release)
 
-    # Link using -l... only if the .so exists locally (keep build portable)
+# Link using -l... only if the .so exists locally (keep build portable)
     exists($$ENGINE_SO_PATH) {
-        LIBS += -L$$PWD/release -lmri_engine_v_1_1
-        message([lin][engine] +link -lmri_engine_v_1_1 (found $$ENGINE_SO_PATH))
+        LIBS += -L$$PWD/release -lmri_engine
+        message([lin][engine] +link -lmri_engine (found $$ENGINE_SO_PATH))
     } else {
         message([lin][engine][WARN] engine .so not found at $$ENGINE_SO_PATH (skipping -l))
     }

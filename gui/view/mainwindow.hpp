@@ -211,5 +211,7 @@ private:
     void showAboutDialog();
     void addAboutDescription(QVBoxLayout* layout);
     void addAboutBadges(QVBoxLayout* layout);
+    void addToolsTab(QVBoxLayout* layout);
+    void addDisclaimerTab(QVBoxLayout* layout);
 
 };

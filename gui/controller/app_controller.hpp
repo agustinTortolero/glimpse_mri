@@ -65,7 +65,22 @@ private:
 
 
     void clearLoadState();
-    bool reconstructAllSlicesFromDll(const QString& pathQ, bool fftshift);
+
+
+    //mri loading related
+    bool ensureEngineInitialized();
+    bool runEngineReconstruction(const QString& pathQ,
+                                 bool fftshift,
+                                 std::vector<float>& host,
+                                 int& S, int& H, int& W);
+    void appendIsmrmrdMetadata(const QString& pathQ);
+
+    bool failRecon(const QString& msg);
+    bool succeedRecon();
+    bool reconstructAllSlicesFromLib(const QString& pathQ, bool fftshift);
+
+
+
     void prepare_fallback();
 
 
