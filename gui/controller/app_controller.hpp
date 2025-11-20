@@ -63,12 +63,16 @@ private:
         MainWindow* v_ = nullptr;
     };
 
+    void initCore();                    // DCMTK + engine init + logging
+    bool initEngine();                  // one-time MRI engine init (uses std::once_flag)
+    void initViewConnections();         // all QObject::connect wiring
+    void initSliceNavigationShortcuts();// keyboard shortcuts for slice navigation
+
+
+    bool m_engineReady = false;
 
     void clearLoadState();
 
-
-    //mri loading related
-    bool ensureEngineInitialized();
     bool runEngineReconstruction(const QString& pathQ,
                                  bool fftshift,
                                  std::vector<float>& host,

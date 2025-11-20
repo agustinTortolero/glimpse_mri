@@ -104,18 +104,24 @@ void splashMessage(QSplashScreen* splash, const QString& msg) {
 }
 
 std::unique_ptr<QSplashScreen> createAndShowSplash(simplelog::Logger& log,
-                                                   const char* resourcePath = ":/assets/splash.png",
-                                                   double screenFrac = 0.50,
-                                                   int clampMaxW = 900,
-                                                   int clampMaxH = 600)
+                                                   const char* resourcePath,
+                                                   double screenFrac,
+                                                   int clampMaxW,
+                                                   int clampMaxH)
 {
     log_and_print(log, std::string("[DBG][Splash] Loading: ") + resourcePath);
+
     QPixmap orig(resourcePath);
-    if (orig.isNull()) { log_and_print(log, "[WRN][Splash] NULL pixmap; skipping"); return {}; }
+    if (orig.isNull()) {
+        log_and_print(log, "[WRN][Splash] NULL pixmap; skipping");
+        return {};
+    }
 
     QScreen* scr = QGuiApplication::screenAt(QCursor::pos());
-    if (!scr) scr = QGuiApplication::primaryScreen();
-    const QRect avail = scr ? scr->availableGeometry() : QRect(0,0,1280,720);
+    if (!scr)
+        scr = QGuiApplication::primaryScreen();
+
+    const QRect avail = scr ? scr->availableGeometry() : QRect(0, 0, 1280, 720);
     const qreal dpr   = scr ? scr->devicePixelRatio() : 1.0;
 
     int maxW = int(avail.width()  * screenFrac);
@@ -130,19 +136,26 @@ std::unique_ptr<QSplashScreen> createAndShowSplash(simplelog::Logger& log,
         );
 
     QPixmap pix;
-    const bool fits = (orig.width() <= deviceTarget.width()) && (orig.height() <= deviceTarget.height());
+    const bool fits = (orig.width() <= deviceTarget.width()) &&
+                      (orig.height() <= deviceTarget.height());
+
     if (fits) {
         pix = orig;
         pix.setDevicePixelRatio(dpr);
         log_and_print(log, "[DBG][Splash] Using native size (no scale), DPR set.");
     } else {
-        QImage img = orig.toImage();
-        QImage scaled = img.scaled(deviceTarget, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        QImage img    = orig.toImage();
+        QImage scaled = img.scaled(deviceTarget,
+                                   Qt::KeepAspectRatio,
+                                   Qt::SmoothTransformation);
         pix = QPixmap::fromImage(scaled);
         pix.setDevicePixelRatio(dpr);
+
         std::ostringstream ss;
-        ss << "[DBG][Splash] Smooth downscale to device " << scaled.width() << "x" << scaled.height()
-           << " (logical " << (scaled.width()/dpr) << "x" << (scaled.height()/dpr) << ") DPR=" << dpr;
+        ss << "[DBG][Splash] Smooth downscale to device "
+           << scaled.width() << "x" << scaled.height()
+           << " (logical " << (scaled.width() / dpr) << "x"
+           << (scaled.height() / dpr) << ") DPR=" << dpr;
         log_and_print(log, ss.str());
     }
 
@@ -150,22 +163,44 @@ std::unique_ptr<QSplashScreen> createAndShowSplash(simplelog::Logger& log,
     splash->setWindowFlag(Qt::WindowStaysOnTopHint, true);
 
     const QSizeF logicalSize = pix.deviceIndependentSize();
-    const QPoint center = avail.center() - QPoint(int(logicalSize.width()/2.0),
-                                                  int(logicalSize.height()/2.0));
+    const QPoint center = avail.center() - QPoint(
+                              int(logicalSize.width()  / 2.0),
+                              int(logicalSize.height() / 2.0)
+                              );
     splash->move(center);
 
-    QFont f = splash->font(); f.setPointSizeF(f.pointSizeF() + 1.5); splash->setFont(f);
-    splash->show(); splash->raise(); splash->activateWindow();
+    // --- DejaVu Sans for splash messages (e.g., "Starting UI...") ---
+    {
+        QFont f("DejaVu Sans");                       // requested font
+        // Bump size a bit relative to default
+        const qreal basePt = splash->font().pointSizeF();
+        if (basePt > 0.0)
+            f.setPointSizeF(basePt + 1.5);
+        splash->setFont(f);
+    }
+
+    splash->show();
+    splash->raise();
+    splash->activateWindow();
+
     {
         std::ostringstream ss;
         ss << "[DBG][Splash] show at " << splash->x() << "," << splash->y()
            << " logical=" << logicalSize.width() << "x" << logicalSize.height();
         log_and_print(log, ss.str());
     }
-    splash->showMessage("Initializing...", Qt::AlignHCenter | Qt::AlignBottom, Qt::white);
+
+    // Initial splash text – also in DejaVu Sans now
+    splash->showMessage(
+        "Initializing.",
+        Qt::AlignHCenter | Qt::AlignBottom,
+        Qt::white
+        );
     QApplication::processEvents();
+
     return splash;
 }
+
 
 // ============================ App icon handling =============================
 QIcon buildAppIcon()
@@ -249,9 +284,8 @@ int main(int argc, char** argv) {
             log_and_print(log, ctx.str());
         }
 
-        QGuiApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);
 
-        QApplication app(argc, argv);
+        QApplication GlimpseMRI(argc, argv);
 
         // --- App icon (taskbar / dock / titlebar) ----------------------------
         QApplication::setWindowIcon(buildAppIcon());
@@ -292,7 +326,7 @@ int main(int argc, char** argv) {
         splash.reset();
 
         // 5) Event loop
-        return runEventLoop(app, log);
+        return runEventLoop(GlimpseMRI, log);
 
     } catch (const std::exception& e) {
         std::ostringstream ss; ss << "[FATAL] Unhandled std::exception: " << e.what();

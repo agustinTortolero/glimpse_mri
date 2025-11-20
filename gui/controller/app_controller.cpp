@@ -49,21 +49,76 @@ static void engine_progress_tramp(int pct, const char* stage, void* user)
 AppController::AppController(MainWindow* view)
     : m_view(view)
 {
-    qDebug() << "[CTRL][ctor] AppController constructed; view?" << (m_view ? "YES" : "NO");
-    io::dcmtk_global_init();
+    qDebug() << "[CTRL][ctor] AppController constructed; view?"
+             << (m_view ? "YES" : "NO");
+
+    // Core initialization: DCMTK + engine
+    initCore();
 
     if (!m_view) {
         qWarning() << "[CTRL][ctor][WRN] MainWindow* is null; UI wiring skipped.";
         return;
     }
 
+    // Wire all UI signals/slots
+    initViewConnections();
+
+    // Configure keyboard shortcuts for slice navigation
+    initSliceNavigationShortcuts();
+
+    // Initial UI state
+    m_view->beginNewImageCycle();
+    qDebug() << "[CTRL] AppController ready (idle). Drag DICOM/HDF5 or use CLI path.";
+}
+
+
+
+void AppController::initCore()
+{
+    qDebug() << "[CTRL][initCore] ENTER";
+
+    // Global DCMTK init
+    io::dcmtk_global_init();
+
+    // Engine init (once per process)
+    qDebug() << "[CTRL][initCore] Calling initEngine()";
+    m_engineReady = initEngine();
+    if (!m_engineReady) {
+        qWarning() << "[CTRL][initCore][WRN]"
+                   << "MRI engine init FAILED; LIB/HDF5 reconstruction will be unavailable.";
+    } else {
+        qDebug() << "[CTRL][initCore] MRI engine initialized successfully.";
+    }
+
+    qDebug() << "[CTRL][initCore] EXIT";
+}
+
+void AppController::initViewConnections()
+{
+    qDebug() << "[CTRL][initViewConnections] ENTER";
+
+    if (!m_view) {
+        qWarning() << "[CTRL][initViewConnections][WRN] m_view is null; skipping";
+        return;
+    }
+
     QObject::connect(m_view, &MainWindow::requestSavePNG,  m_view,
-                     [this](const QString& p){ qDebug() << "[CTRL] savePNG ->" << p; this->savePNG(p); });
+                     [this](const QString& p){
+                         qDebug() << "[CTRL] savePNG ->" << p;
+                         this->savePNG(p);
+                     });
+
     QObject::connect(m_view, &MainWindow::requestSaveDICOM, m_view,
-                     [this](const QString& p){ qDebug() << "[CTRL] saveDICOM ->" << p; this->saveDICOM(p); });
+                     [this](const QString& p){
+                         qDebug() << "[CTRL] saveDICOM ->" << p;
+                         this->saveDICOM(p);
+                     });
 
     QObject::connect(m_view, &MainWindow::sliceChanged, m_view,
-                     [this](int idx){ qDebug() << "[CTRL] sliceChanged ->" << idx; this->onSliceChanged(idx); });
+                     [this](int idx){
+                         qDebug() << "[CTRL] sliceChanged ->" << idx;
+                         this->onSliceChanged(idx);
+                     });
 
     QObject::connect(m_view, &MainWindow::fileDropped, m_view,
                      [this](const QString& p){
@@ -82,25 +137,6 @@ AppController::AppController(MainWindow* view)
                          this->onHistogramUpdateRequested(s);
                      });
 
-    auto step = [this](int d){
-        if (m_slices8.empty()) return;
-        const int n = (int)m_slices8.size();
-        showSlice(std::clamp(m_currentSlice + d, 0, n - 1));
-    };
-    auto jump = [this](int t){
-        if (m_slices8.empty()) return;
-        const int n = (int)m_slices8.size();
-        showSlice(std::clamp(t, 0, n - 1));
-    };
-    auto bindStep = [&](const QKeySequence& ks, int d){
-        auto* sc = new QShortcut(ks, m_view);
-        QObject::connect(sc, &QShortcut::activated, m_view, [=]{ step(d); });
-    };
-    auto bindJump = [&](const QKeySequence& ks, int t){
-        auto* sc = new QShortcut(ks, m_view);
-        QObject::connect(sc, &QShortcut::activated, m_view, [=]{ jump(t); });
-    };
-
     QObject::connect(m_view, &MainWindow::requestApplyNegative, m_view, [this](){
         qDebug() << "[CTRL][FX] requestApplyNegative -> toggleNegative()";
         this->toggleNegative();
@@ -117,26 +153,67 @@ AppController::AppController(MainWindow* view)
                                   << "basePath=" << basePath
                                   << "px=" << px << "py=" << py
                                   << "thick=" << sth << "spacing=" << sbs
-                                  << "iop6.len=" << iop6.size() << " ipp0.len=" << ipp0.size();
+                                  << "iop6.len=" << iop6.size()
+                                  << "ipp0.len=" << ipp0.size();
                          this->saveDICOMSeriesMR(basePath, px, py, sth, sbs, iop6, ipp0);
                      });
 
-
-
-    bindStep(QKeySequence(Qt::Key_Up), -1);
-    bindStep(QKeySequence(Qt::Key_Left), -1);
-    bindStep(QKeySequence(Qt::Key_Down), +1);
-    bindStep(QKeySequence(Qt::Key_Right), +1);
-    bindStep(QKeySequence(Qt::Key_PageUp), -5);
-    bindStep(QKeySequence(Qt::Key_PageDown), +5);
-    bindJump(QKeySequence(Qt::Key_Home), 0);
-    bindJump(QKeySequence(Qt::Key_End), 1'000'000);
-    bindStep(QKeySequence("["), -1);
-    bindStep(QKeySequence("]"), +1);
-
-    m_view->beginNewImageCycle();
-    qDebug() << "[CTRL] AppController ready (idle). Drag DICOM/HDF5 or use CLI path.";
+    qDebug() << "[CTRL][initViewConnections] EXIT";
 }
+
+
+void AppController::initSliceNavigationShortcuts()
+{
+    qDebug() << "[CTRL][initSliceNavigationShortcuts] ENTER";
+
+    if (!m_view) {
+        qWarning() << "[CTRL][initSliceNavigationShortcuts][WRN] m_view is null; skipping";
+        return;
+    }
+
+    auto step = [this](int d){
+        if (m_slices8.empty()) return;
+        const int n = static_cast<int>(m_slices8.size());
+        showSlice(std::clamp(m_currentSlice + d, 0, n - 1));
+    };
+
+    auto jump = [this](int t){
+        if (m_slices8.empty()) return;
+        const int n = static_cast<int>(m_slices8.size());
+        showSlice(std::clamp(t, 0, n - 1));
+    };
+
+    auto bindStep = [&](const QKeySequence& ks, int d){
+        auto* sc = new QShortcut(ks, m_view);
+        QObject::connect(sc, &QShortcut::activated, m_view, [=]{
+            qDebug() << "[CTRL][Shortcut] step" << d << "via" << ks.toString();
+            step(d);
+        });
+    };
+
+    auto bindJump = [&](const QKeySequence& ks, int t){
+        auto* sc = new QShortcut(ks, m_view);
+        QObject::connect(sc, &QShortcut::activated, m_view, [=]{
+            qDebug() << "[CTRL][Shortcut] jump to" << t << "via" << ks.toString();
+            jump(t);
+        });
+    };
+
+    bindStep(QKeySequence(Qt::Key_Up),       -1);
+    bindStep(QKeySequence(Qt::Key_Left),     -1);
+    bindStep(QKeySequence(Qt::Key_Down),     +1);
+    bindStep(QKeySequence(Qt::Key_Right),    +1);
+    bindStep(QKeySequence(Qt::Key_PageUp),   -5);
+    bindStep(QKeySequence(Qt::Key_PageDown), +5);
+    bindJump(QKeySequence(Qt::Key_Home),      0);
+    bindJump(QKeySequence(Qt::Key_End),  1'000'000);
+    bindStep(QKeySequence("["),              -1);
+    bindStep(QKeySequence("]"),              +1);
+
+    qDebug() << "[CTRL][initSliceNavigationShortcuts] EXIT";
+}
+
+
 
 AppController::~AppController() = default;
 
@@ -261,7 +338,7 @@ bool AppController::succeedRecon()
     return true;
 }
 
-bool AppController::ensureEngineInitialized()
+bool AppController::initEngine()
 {
     static std::once_flag once;
     static int init_ok = 0;
@@ -269,12 +346,60 @@ bool AppController::ensureEngineInitialized()
     std::call_once(once, [&]() {
         const char* ver = engine_version();
         qDebug() << "[LIB] engine_version ->" << (ver ? ver : "(null)");
+
         init_ok = engine_init(0);
-        qDebug() << "[LIB] engine_init ->" << init_ok;
+        qDebug() << "[LIB] engine_init(0) ->" << init_ok;
+
+        // Query and log init info from the engine
+        engine_init_info_t info{};
+        engine_get_last_init_info(&info);
+
+        qDebug() << "[LIB][Init][DBG]"
+                 << "struct_size="       << info.struct_size
+                 << "cuda_compiled="     << info.cuda_compiled
+                 << "has_cuda="          << info.has_cuda
+                 << "force_cpu="         << info.force_cpu
+                 << "cuda_device_index=" << info.cuda_device_index
+                 << "cc="                << info.cuda_cc_major << "." << info.cuda_cc_minor
+                 << "mem_gb="            << info.cuda_mem_gb
+                 << "omp_enabled="       << info.omp_enabled
+                 << "omp_max_threads="   << info.omp_max_threads
+                 << "cuda_name="         << info.cuda_name;
+
+        if (!init_ok) {
+            qWarning() << "[LIB][Init][WRN] engine_init reported FAILURE";
+            return;
+        }
+
+        // Pretty summary: CUDA vs CPU
+        if (info.cuda_compiled && info.has_cuda && !info.force_cpu) {
+            qDebug() << "[LIB][Init] Backend: CUDA device"
+                     << info.cuda_device_index
+                     << "(" << info.cuda_name << ")"
+                     << "cc=" << info.cuda_cc_major << "." << info.cuda_cc_minor
+                     << "mem=" << info.cuda_mem_gb << "GB"
+                     << "OMP threads=" << (info.omp_enabled ? info.omp_max_threads : 0);
+        } else {
+            if (!info.cuda_compiled) {
+                qDebug() << "[LIB][Init] Backend: CPU only (CUDA backend not compiled)";
+            } else if (info.force_cpu) {
+                qDebug() << "[LIB][Init] Backend: CPU (forced CPU mode)";
+            } else if (!info.has_cuda) {
+                qDebug() << "[LIB][Init] Backend: CPU (no usable CUDA device found)";
+            }
+
+            if (info.omp_enabled) {
+                qDebug() << "[LIB][Init] CPU parallelism: OpenMP ENABLED,"
+                         << "max_threads=" << info.omp_max_threads;
+            } else {
+                qDebug() << "[LIB][Init] CPU parallelism: OpenMP DISABLED (single-threaded)";
+            }
+        }
     });
 
     return init_ok != 0;
 }
+
 
 bool AppController::runEngineReconstruction(const QString& pathQ,
                                             bool fftshift,
@@ -374,9 +499,12 @@ bool AppController::reconstructAllSlicesFromLib(const QString& pathQ, bool fftsh
 
     m_splash->start("Reconstructing");
 
-    // 1) Engine init ----------------------------------------------------------
-    if (!ensureEngineInitialized())
-        return failRecon("engine_init failed");
+    // Safety: we *expect* the engine to be ready because ctor called initEngine().
+    if (!m_engineReady) {
+        qWarning() << "[LIB][WRN] reconstructAllSlicesFromLib called but m_engineReady == false."
+                   << "Did initEngine() fail or was controller constructed differently?";
+        return failRecon("engine not initialized (m_engineReady == false)");
+    }
 
     // 2) Run engine reconstruction --------------------------------------------
     std::vector<float> host;
@@ -385,7 +513,7 @@ bool AppController::reconstructAllSlicesFromLib(const QString& pathQ, bool fftsh
     if (!runEngineReconstruction(pathQ, fftshift, host, S, H, W))
         return failRecon("engine_reconstruct_all failed");
 
-    // 3) Convert & adopt slices ------------------------------------------------
+    // 3) Convert & adopt slices -----------------------------------------------
     adoptReconStackF32(host, S, H, W);
 
     m_meta << QString("LIB: Slices=%1, Size=%2x%3").arg(S).arg(W).arg(H);
@@ -395,9 +523,10 @@ bool AppController::reconstructAllSlicesFromLib(const QString& pathQ, bool fftsh
 
     qDebug() << "[LIB] Reconstruction success S=" << S << " H=" << H << " W=" << W;
 
-    // 5) Finish ----------------------------------------------------------------
+    // 5) Finish ---------------------------------------------------------------
     return succeedRecon();
 }
+
 
 
 

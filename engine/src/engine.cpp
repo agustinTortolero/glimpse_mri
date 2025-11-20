@@ -105,6 +105,8 @@ namespace {
     enum class BackendUsed { CPU, CUDA };
 
 
+    static engine_init_info_t g_init_info = {};
+
     // --- Global state (simple, clarity-first) --------------------------------
     static int g_force_cpu = 0;    // 1 = force CPU path
     static int g_device_id = -1;   // as passed to engine_init
@@ -336,60 +338,110 @@ namespace {
 // ============================================================================
 extern "C" {
 
+
+    ENGINE_API void ENGINE_CALL engine_get_last_init_info(engine_init_info_t* out) {
+        if (!out) {
+            platform_debug_output("[DBG][ENGINE] engine_get_last_init_info(nullptr) — no-op");
+            return;
+        }
+        *out = g_init_info;  // plain struct copy
+    }
+
+
     ENGINE_API const char* engine_version(void) {
         static const char* kVersion = ENGINE_VERSION_STR;
         platform_debug_printf("[DBG][ENGINE] engine_version -> %s", kVersion);
         return kVersion;
     }
 
-    ENGINE_API int engine_init(int device_id) {
+    ENGINE_API int ENGINE_CALL engine_init(int device_id) {
         g_device_id = device_id;
+
+        // Reset info
+        std::memset(&g_init_info, 0, sizeof(g_init_info));
+        g_init_info.struct_size = (int)sizeof(engine_init_info_t);
 
         const char* env_force = std::getenv("MRI_FORCE_CPU");
         g_force_cpu = (device_id == -1) || (env_force && std::strlen(env_force) > 0);
+        g_init_info.force_cpu = g_force_cpu;
 
-        platform_debug_printf("[DBG][ENGINE] engine_init(device_id=%d) MRI_FORCE_CPU=%s -> force_cpu=%s",
+        platform_debug_printf(
+            "[DBG][ENGINE] engine_init(device_id=%d) MRI_FORCE_CPU=%s -> force_cpu=%s",
             device_id,
             env_force ? env_force : "null",
             g_force_cpu ? "true" : "false");
+
+        // --- OpenMP info ------------------------------------------------------
 #ifdef _OPENMP
         {
             int threads = omp_get_max_threads();
+            g_init_info.omp_enabled = 1;
+            g_init_info.omp_max_threads = threads;
+
             platform_debug_printf("[DBG][ENGINE][OMP] enabled, max_threads=%d", threads);
         }
 #else
+        g_init_info.omp_enabled = 0;
+        g_init_info.omp_max_threads = 0;
         platform_debug_output("[DBG][ENGINE][OMP] disabled at build");
 #endif
 
+        // --- CUDA info --------------------------------------------------------
 #if ENGINE_HAS_CUDA
+        g_init_info.cuda_compiled = 1;
+
         if (!g_force_cpu) {
             int ndev = 0;
             cudaError_t ce = cudaGetDeviceCount(&ndev);
             if (ce == cudaSuccess && ndev > 0) {
                 int want = (g_device_id >= 0 && g_device_id < ndev) ? g_device_id : 0;
+
                 cudaSetDevice(want);
+
                 cudaDeviceProp p{};
                 cudaGetDeviceProperties(&p, want);
-                platform_debug_printf("[DBG][ENGINE][CUDA] using device %d: %s  cc=%d.%d  mem=%.2f GB",
-                    want, p.name, p.major, p.minor, p.totalGlobalMem / (1024.0 * 1024.0 * 1024.0));
+
+                g_init_info.has_cuda = 1;
+                g_init_info.cuda_device_index = want;
+                g_init_info.cuda_cc_major = p.major;
+                g_init_info.cuda_cc_minor = p.minor;
+                g_init_info.cuda_mem_gb = p.totalGlobalMem / (1024.0 * 1024.0 * 1024.0);
+
+                std::memset(g_init_info.cuda_name, 0, sizeof(g_init_info.cuda_name));
+                std::strncpy(g_init_info.cuda_name, p.name, sizeof(g_init_info.cuda_name) - 1);
+
+                platform_debug_printf(
+                    "[DBG][ENGINE][CUDA] using device %d: %s  cc=%d.%d  mem=%.2f GB",
+                    want, p.name, p.major, p.minor,
+                    g_init_info.cuda_mem_gb);
             }
             else {
-                platform_debug_printf("[DBG][ENGINE][CUDA] unavailable (err=%d or count=%d) -> CPU mode",
+                g_init_info.has_cuda = 0;
+                g_init_info.cuda_device_index = -1;
+
+                platform_debug_printf(
+                    "[DBG][ENGINE][CUDA] unavailable (err=%d or count=%d) -> CPU mode",
                     (int)ce, ndev);
                 g_force_cpu = 1;
+                g_init_info.force_cpu = 1;
             }
         }
         else {
+            g_init_info.has_cuda = 0;
+            g_init_info.cuda_device_index = -1;
             platform_debug_output("[DBG][ENGINE][CUDA] forced CPU mode (device_id=-1 or MRI_FORCE_CPU)");
         }
 #else
+        g_init_info.cuda_compiled = 0;
+        g_init_info.has_cuda = 0;
+        g_init_info.cuda_device_index = -1;
         platform_debug_output("[DBG][ENGINE][CUDA] backend not compiled");
 #endif
 
-
-
         return 1; // success
     }
+
+
 
     ENGINE_API void engine_set_progress_cb(engine_progress_fn fn, void* user) {
         g_prog_cb = fn;
