@@ -43,6 +43,8 @@ DisableDirPage=no
 DisableProgramGroupPage=yes
 CloseApplications=force
 
+
+
 [Languages]
 Name: "en"; MessagesFile: "compiler:Default.isl"
 

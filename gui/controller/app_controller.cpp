@@ -670,11 +670,34 @@ void AppController::showSlice(int idx)
 
 void AppController::savePNG(const QString& outPath)
 {
-    if (m_lastImg8.empty() || m_lastImg8.type() != CV_8UC1) return;
-    const std::string path_utf8 = outPath.toUtf8().constData();
+    qDebug() << "[CTRL][SavePNG] ENTER outPath =" << outPath;
+
+    if (m_lastImg8.empty()) {
+        qWarning() << "[CTRL][SavePNG][WRN] m_lastImg8 is EMPTY; aborting PNG save";
+        return;
+    }
+
+    qDebug() << "[CTRL][SavePNG] m_lastImg8: type=" << m_lastImg8.type()
+             << " depth=" << m_lastImg8.depth()
+             << " channels=" << m_lastImg8.channels()
+             << " size=" << m_lastImg8.cols << "x" << m_lastImg8.rows;
+
+    // OpenCV on Windows is usually happier with local 8-bit paths
+    const std::string path_local8 = outPath.toLocal8Bit().constData();
     std::string why;
-    io::write_png(path_utf8, m_lastImg8, &why);
+
+    const bool ok = io::write_png(path_local8, m_lastImg8, &why);
+    if (!ok) {
+        qWarning() << "[CTRL][SavePNG][ERR] write_png FAILED:"
+                   << QString::fromStdString(why)
+                   << " path=" << outPath;
+    } else {
+        qDebug() << "[CTRL][SavePNG] OK ->" << outPath;
+    }
+
+    qDebug() << "[CTRL][SavePNG] EXIT";
 }
+
 
 void AppController::saveDICOM(const QString& outPath)
 {

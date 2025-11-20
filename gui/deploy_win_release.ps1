@@ -27,11 +27,11 @@ $DistDir       = Join-Path $DistRoot "GlimpseMRI_Release"
 
 # Your GUI-local release libs (next to project, not build)
 $GuiReleaseDir = Join-Path $ProjRoot "release"
-$EngineDllPRJ  = Join-Path $GuiReleaseDir "mri_engine_v_1_1.dll"
+$EngineDllPRJ  = Join-Path $GuiReleaseDir "mri_engine.dll"
 $DicomDllPRJ   = Join-Path $GuiReleaseDir "dicom_io_lib.dll"
 
 # Build output candidates
-$EngineDllBLD  = Join-Path $BuildRel "mri_engine_v_1_1.dll"
+$EngineDllBLD  = Join-Path $BuildRel "mri_engine.dll"
 $DicomDllBLD_1 = Join-Path $BuildRel "dicom_io_lib.dll"
 $DicomDllBLD_2 = Join-Path $BuildRel "dicom__io_lib.dll"  # double underscore (seen previously)
 
@@ -140,7 +140,7 @@ function Copy-FirstFound {
 
 # ---- Copy engine (release) --------------------------------------------------
 $EngineOk = Copy-FirstFound -Candidates @($EngineDllPRJ, $EngineDllBLD) `
-                            -DestFullPath (Join-Path $DistDir "mri_engine_v_1_1.dll") `
+                            -DestFullPath (Join-Path $DistDir "mri_engine.dll") `
                             -Label "Engine DLL" -NormalizeName
 
 # ---- Copy DICOM (release, robust) ------------------------------------------
@@ -258,7 +258,7 @@ if (Test-Path $CudaBin) {
 
 # ---- Final sanity check -----------------------------------------------------
 $mustHave = @(
-    (Join-Path $DistDir "mri_engine_v_1_1.dll"),
+    (Join-Path $DistDir "mri_engine.dll"),
     (Join-Path $DistDir "dicom_io_lib.dll")
 )
 $opencvAny = Get-ChildItem -Path $DistDir -Filter "opencv_world*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
