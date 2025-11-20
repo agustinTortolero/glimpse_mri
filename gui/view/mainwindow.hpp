@@ -106,7 +106,8 @@ protected:
 
 private:
 
-
+    void applyDarkTheme();
+    void applyGlobalDarkTheme();
     QAction* quickSaveDicom = nullptr;
 
     void buildUi();

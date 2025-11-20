@@ -57,6 +57,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
 {
     std::cerr << "[DBG][View][Ctor] start\n";
     setAcceptDrops(true);
+
+
+    applyGlobalDarkTheme();
     buildUi();
     std::cerr << "[DBG][View][Ctor] end\n";
 }
@@ -1220,13 +1223,12 @@ void MainWindow::addAboutDescription(QVBoxLayout* layout)
 
 <p>Built with <b>C++</b>, <b>CUDA</b>, and <b>Qt</b>, <b>Glimpse MRI</b> delivers a clean, responsive interface while offloading heavy computation to a custom <b>high-performance, heterogeneous MRI engine</b>.</p>
 
-<p>The engine targets modern CPUs and GPUs—multi-threading with <b>OpenMP</b>, CPU-side Fourier transforms with <b>FFTW (Fastest Fourier Transform in the West)</b>, and GPU acceleration via custom <b>CUDA</b> kernels plus <b>NVIDIA cuFFT</b> and <b>NVIDIA cuBLAS</b>, enabling fast reconstruction and smooth, real-time interaction.</p>
+<p>The engine targets modern CPUs and GPUs multi-threading with <b>OpenMP</b>, CPU-side Fourier transforms with <b>FFTW (Fastest Fourier Transform in the West)</b>, and GPU acceleration via custom <b>CUDA</b> kernels plus <b>NVIDIA cuFFT</b> and <b>NVIDIA cuBLAS</b>, enabling fast reconstruction and smooth, real-time interaction.</p>
 
 <p>Designed and built by Agustin Tortolero.</p>
 <p><b>Source code</b>: <a href='https://github.com/agustinTortolero/GlimpseMRI'>github.com/agustinTortolero/GlimpseMRI</a></p>
 </div>
 )";
-
 
     const QString description = QString::fromUtf8(kAboutHtml);
 
@@ -1234,14 +1236,27 @@ void MainWindow::addAboutDescription(QVBoxLayout* layout)
     browser->setObjectName("aboutDescription");
     browser->setOpenExternalLinks(true);
     browser->setReadOnly(true);
-    browser->setStyleSheet("border: none; background: transparent;");
+
+    // 🔴 CHANGED: light gray background only for this widget
+
+    browser->setStyleSheet(
+        "QTextBrowser { "
+        "  border: none; "
+        "  background-color: #7a7a7a; "
+        "  color: #202020; "
+        "}"
+        );
+
+
+
+
     browser->document()->setDefaultFont(QFont("Verdana", 10));
 
     // Load HTML first
     browser->setHtml(description);
     qDebug() << "[About][UI] HTML loaded into QTextBrowser";
 
-    // Force-justify at the document level as a fallback (helps if HTML changes later)
+    // Force justify as fallback
     QTextOption opt = browser->document()->defaultTextOption();
     opt.setAlignment(Qt::AlignJustify);
     browser->document()->setDefaultTextOption(opt);
@@ -1363,7 +1378,16 @@ void MainWindow::addDisclaimerTab(QVBoxLayout* layout)
     browser->setObjectName("aboutDisclaimer");
     browser->setOpenExternalLinks(true);
     browser->setReadOnly(true);
-    browser->setStyleSheet("border: none; background: transparent;");
+
+    // Same color scheme as Overview tab
+    browser->setStyleSheet(
+        "QTextBrowser { "
+        "  border: none; "
+        "  background-color: #7a7a7a; "
+        "  color: #202020; "
+        "}"
+        );
+
     browser->document()->setDefaultFont(QFont("Verdana", 10));
 
     browser->setHtml(html);
@@ -1377,6 +1401,7 @@ void MainWindow::addDisclaimerTab(QVBoxLayout* layout)
     layout->addWidget(browser);
     qDebug() << "[About][UI] addDisclaimerTab DONE widget=" << browser;
 }
+
 
 void MainWindow::addToolsTab(QVBoxLayout* layout)
 {
@@ -1423,7 +1448,16 @@ void MainWindow::addToolsTab(QVBoxLayout* layout)
     browser->setObjectName("aboutTools");
     browser->setOpenExternalLinks(true);
     browser->setReadOnly(true);
-    browser->setStyleSheet("border: none; background: transparent;");
+
+    // Same color scheme as Overview tab
+    browser->setStyleSheet(
+        "QTextBrowser { "
+        "  border: none; "
+        "  background-color: #7a7a7a; "
+        "  color: #202020; "
+        "}"
+        );
+
     browser->document()->setDefaultFont(QFont("Verdana", 10));
 
     browser->setHtml(html);
@@ -1436,5 +1470,259 @@ void MainWindow::addToolsTab(QVBoxLayout* layout)
 
     layout->addWidget(browser);
     qDebug() << "[About][UI] addToolsTab DONE widget=" << browser;
+}
+
+
+
+void MainWindow::applyDarkTheme()
+{
+    qDebug() << "[Theme][UI] Applying dark gray theme...";
+
+    // Base colors
+    QString base   = "#2b2b2b";   // dark gray
+    QString panel  = "#3a3a3a";   // slightly lighter gray
+    QString hover  = "#444444";
+    QString text   = "#f0f0f0";
+    QString border = "#555555";
+
+    QString css = QString(R"(
+        QMainWindow {
+            background-color: %1;
+        }
+        QWidget {
+            background-color: %1;
+            color: %4;
+        }
+        QLabel {
+            background-color: %1;
+            color: %4;
+        }
+        QMenuBar, QMenu {
+            background-color: %2;
+            color: %4;
+        }
+        QMenu::item:selected {
+            background-color: %3;
+        }
+        QStatusBar {
+            background-color: %2;
+            color: %4;
+        }
+        QPlainTextEdit, QTextEdit, QTextBrowser {
+            background-color: %2;
+            border: 1px solid %5;
+            color: %4;
+        }
+        QDockWidget {
+            background-color: %2;
+            titlebar-close-icon: url(none);
+            titlebar-normal-icon: url(none);
+        }
+        QDockWidget::title {
+            background-color: %3;
+            color: %4;
+            padding: 4px;
+        }
+        QSlider::groove:horizontal {
+            background: %5;
+            height: 6px;
+        }
+        QSlider::handle:horizontal {
+            background: %4;
+            width: 14px;
+            border-radius: 3px;
+        }
+    )")
+                      .arg(base)   // %1
+                      .arg(panel)  // %2
+                      .arg(hover)  // %3
+                      .arg(text)   // %4
+                      .arg(border) // %5
+        ;
+
+    qApp->setStyleSheet(css);
+    qDebug() << "[Theme][UI] Dark theme applied.";
+}
+
+
+void MainWindow::applyGlobalDarkTheme()
+{
+    qDebug() << "[Theme][UI] Applying global dark stylesheet";
+
+    const QString css = R"(
+        /* Base widget colors */
+        QWidget {
+            background-color: #262626;
+            color: #f0f0f0;
+        }
+
+        QMainWindow {
+            background-color: #262626;
+        }
+
+        /* Labels */
+        QLabel {
+            background-color: transparent;
+            color: #f0f0f0;
+        }
+
+        /* Buttons */
+        QPushButton, QToolButton {
+            background-color: #3a3a3a;
+            color: #f0f0f0;
+            border: 1px solid #555555;
+            border-radius: 4px;
+            padding: 4px 10px;
+        }
+        QPushButton:hover, QToolButton:hover {
+            background-color: #4a4a4a;
+        }
+        QPushButton:pressed, QToolButton:pressed {
+            background-color: #555555;
+        }
+        QPushButton:disabled, QToolButton:disabled {
+            background-color: #333333;
+            color: #888888;
+            border-color: #444444;
+        }
+
+        /* Dialog buttons (OK, Cancel, etc.) */
+        QDialogButtonBox QPushButton {
+            min-width: 70px;
+        }
+
+        /* Menus */
+        QMenuBar {
+            background-color: #303030;
+            color: #f0f0f0;
+        }
+        QMenuBar::item {
+            background: transparent;
+            padding: 4px 8px;
+        }
+        QMenuBar::item:selected {
+            background: #404040;
+        }
+        QMenu {
+            background-color: #303030;
+            color: #f0f0f0;
+            border: 1px solid #505050;
+        }
+        QMenu::item:selected {
+            background-color: #4a4a4a;
+        }
+
+        /* Tabs */
+        QTabWidget::pane {
+            border: 1px solid #505050;
+            background: #262626;
+        }
+        QTabBar::tab {
+            background: #333333;
+            color: #f0f0f0;
+            padding: 6px 10px;
+            border: 1px solid #505050;
+            border-bottom: none;
+        }
+        QTabBar::tab:selected {
+            background: #444444;
+        }
+        QTabBar::tab:hover {
+            background: #505050;
+        }
+
+        /* Dock widgets */
+        QDockWidget {
+            background-color: #262626;
+            titlebar-close-icon: url(none);
+            titlebar-normal-icon: url(none);
+        }
+        QDockWidget::title {
+            background-color: #333333;
+            color: #f0f0f0;
+            padding: 4px;
+        }
+
+        /* Status bar */
+        QStatusBar {
+            background-color: #303030;
+            color: #d0d0d0;
+        }
+
+        /* Text widgets */
+        QPlainTextEdit,
+        QTextEdit,
+        QTextBrowser,
+        QLineEdit,
+        QSpinBox,
+        QDoubleSpinBox,
+        QComboBox {
+            background-color: #333333;
+            color: #f0f0f0;
+            border: 1px solid #555555;
+            selection-background-color: #666666;
+            selection-color: #ffffff;
+        }
+
+        /* ComboBox popup */
+        QComboBox QAbstractItemView {
+            background-color: #333333;
+            color: #f0f0f0;
+            selection-background-color: #4a4a4a;
+        }
+
+        /* Sliders */
+        QSlider::groove:horizontal {
+            background: #3a3a3a;
+            height: 6px;
+            border-radius: 3px;
+        }
+        QSlider::handle:horizontal {
+            background: #f0f0f0;
+            width: 14px;
+            border-radius: 3px;
+            margin: -4px 0; /* center handle */
+        }
+
+        /* Scrollbars */
+        QScrollBar:vertical {
+            background: #2a2a2a;
+            width: 12px;
+            margin: 0;
+        }
+        QScrollBar::handle:vertical {
+            background: #555555;
+            min-height: 20px;
+        }
+        QScrollBar::add-line:vertical,
+        QScrollBar::sub-line:vertical {
+            background: #2a2a2a;
+            height: 0;
+        }
+        QScrollBar:horizontal {
+            background: #2a2a2a;
+            height: 12px;
+            margin: 0;
+        }
+        QScrollBar::handle:horizontal {
+            background: #555555;
+            min-width: 20px;
+        }
+        QScrollBar::add-line:horizontal,
+        QScrollBar::sub-line:horizontal {
+            background: #2a2a2a;
+            width: 0;
+        }
+
+        /* Tooltips */
+        QToolTip {
+            background-color: #444444;
+            color: #f0f0f0;
+            border: 1px solid #666666;
+        }
+    )";
+
+    qApp->setStyleSheet(css);
+    qDebug() << "[Theme][UI] Global dark stylesheet applied";
 }
 

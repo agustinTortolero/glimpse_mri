@@ -66,6 +66,8 @@ AppController::AppController(MainWindow* view)
     // Configure keyboard shortcuts for slice navigation
     initSliceNavigationShortcuts();
 
+
+
     // Initial UI state
     m_view->beginNewImageCycle();
     qDebug() << "[CTRL] AppController ready (idle). Drag DICOM/HDF5 or use CLI path.";

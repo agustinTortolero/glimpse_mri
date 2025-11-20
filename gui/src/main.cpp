@@ -162,6 +162,15 @@ std::unique_ptr<QSplashScreen> createAndShowSplash(simplelog::Logger& log,
     auto splash = std::make_unique<QSplashScreen>(pix);
     splash->setWindowFlag(Qt::WindowStaysOnTopHint, true);
 
+    {
+        QPalette pal = splash->palette();
+        pal.setColor(QPalette::Window, Qt::black);
+        splash->setAutoFillBackground(true);
+        splash->setPalette(pal);
+        qDebug() << "[Splash][UI] Background set to black";
+    }
+
+
     const QSizeF logicalSize = pix.deviceIndependentSize();
     const QPoint center = avail.center() - QPoint(
                               int(logicalSize.width()  / 2.0),
@@ -242,7 +251,7 @@ Ui buildUi(simplelog::Logger& log, QSplashScreen* splash) {
     splashMessage(splash, "Wiring controller...");
     auto c = std::make_unique<AppController>(w.get());
 
-    w->setWindowTitle("Glimpse MRI --- preRelease");
+    w->setWindowTitle("Glimpse MRI --- preRelease v2");
     log_and_print(log, "[DBG][Main] Window title set.");
     return { std::move(w), std::move(c) };
 }
