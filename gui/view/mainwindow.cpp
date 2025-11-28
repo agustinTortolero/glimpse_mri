@@ -51,6 +51,9 @@
 
 #include <opencv2/imgproc.hpp>
 
+#include "engine_api.h"
+
+
 using namespace std::chrono_literals;
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
@@ -1148,6 +1151,137 @@ void MainWindow::drawSliceOverlay(cv::Mat& img8)
              << "alpha=0.35";
 }
 
+
+void MainWindow::addVersionTab(QTabWidget* tabs)
+{
+    qDebug() << "[UI][About] addVersionTab() ENTER";
+
+    // GUI version – later you can make this a macro from CMake/qmake
+    const QString guiVersion = QStringLiteral("1.0");
+
+    const char* verCStr = engine_version();
+    QString engineVersion = verCStr ? QString::fromUtf8(verCStr)
+                                    : QStringLiteral("Unknown");
+
+    qDebug() << "[UI][About] engine_version() ->" << engineVersion;
+
+    QString versionText;
+    versionText += QString("GUI: %1\n").arg(guiVersion);
+    versionText += QString("MRI Engine: %1\n").arg(engineVersion);
+
+    qDebug() << "[UI][About] Version tab text to display:" << versionText;
+
+    auto* browser = new QTextBrowser(tabs);
+    browser->setFrameShape(QFrame::NoFrame);
+    browser->setReadOnly(true);
+    browser->setText(versionText);
+
+    browser->setStyleSheet(
+        "QTextBrowser { "
+        "  border: none; "
+        "  background-color: #7a7a7a; "
+        "  color: #202020; "
+        "}"
+        );
+
+    tabs->addTab(browser, tr("Version"));
+    qDebug() << "[UI][About] addVersionTab() EXIT";
+}
+
+void MainWindow::addHardwareTab(QTabWidget* tabs)
+{
+    qDebug() << "[UI][About] addHardwareTab() ENTER";
+
+    engine_init_info_t info{};
+    engine_get_last_init_info(&info);
+
+    // Smoke-test: print everything to the console
+    qDebug() << "[UI][About][HW] struct_size       =" << info.struct_size;
+    qDebug() << "[UI][About][HW] cuda_compiled     =" << info.cuda_compiled;
+    qDebug() << "[UI][About][HW] has_cuda          =" << info.has_cuda;
+    qDebug() << "[UI][About][HW] force_cpu         =" << info.force_cpu;
+    qDebug() << "[UI][About][HW] cuda_device_index =" << info.cuda_device_index;
+    qDebug() << "[UI][About][HW] cc                ="
+             << info.cuda_cc_major << "." << info.cuda_cc_minor;
+    qDebug() << "[UI][About][HW] mem_gb            =" << info.cuda_mem_gb;
+    qDebug() << "[UI][About][HW] omp_enabled       =" << info.omp_enabled;
+    qDebug() << "[UI][About][HW] omp_max_threads   =" << info.omp_max_threads;
+    qDebug() << "[UI][About][HW] cuda_name         ="
+             << (info.cuda_name ? info.cuda_name : "(null)");
+
+    QString hwText;
+
+    // Backend summary
+    if (info.cuda_compiled && info.has_cuda && !info.force_cpu) {
+        const QString cudaName =
+            info.cuda_name ? QString::fromUtf8(info.cuda_name) : QString();
+
+        hwText += QString("Backend: CUDA device %1 (%2)\n")
+                      .arg(info.cuda_device_index)
+                      .arg(cudaName);
+        hwText += QString("Compute capability: %1.%2\n")
+                      .arg(info.cuda_cc_major)
+                      .arg(info.cuda_cc_minor);
+        hwText += QString("Device memory: %1 GB\n")
+                      .arg(info.cuda_mem_gb);
+    } else {
+        if (!info.cuda_compiled) {
+            hwText += QStringLiteral(
+                "Backend: CPU only (CUDA backend not compiled)\n");
+        } else if (info.force_cpu) {
+            hwText += QStringLiteral(
+                "Backend: CPU (forced CPU mode)\n");
+        } else if (!info.has_cuda) {
+            hwText += QStringLiteral(
+                "Backend: CPU (no usable CUDA device found)\n");
+        } else {
+            hwText += QStringLiteral(
+                "Backend: CPU backend (unspecified)\n");
+        }
+    }
+
+    hwText += "\n";
+    hwText += QString("CUDA compiled: %1\n")
+                  .arg(info.cuda_compiled ? "Yes" : "No");
+    hwText += QString("Has CUDA device: %1\n")
+                  .arg(info.has_cuda ? "Yes" : "No");
+    hwText += QString("Force CPU: %1\n")
+                  .arg(info.force_cpu ? "Yes" : "No");
+    hwText += QString("CUDA device index: %1\n")
+                  .arg(info.cuda_device_index);
+    hwText += QString("CUDA device name: %1\n")
+                  .arg(info.cuda_name ? QString::fromUtf8(info.cuda_name)
+                                      : QStringLiteral("(unknown)"));
+    hwText += QString("Compute capability: %1.%2\n")
+                  .arg(info.cuda_cc_major)
+                  .arg(info.cuda_cc_minor);
+    hwText += QString("Device memory: %1 GB\n")
+                  .arg(info.cuda_mem_gb);
+    hwText += QString("OpenMP enabled: %1\n")
+                  .arg(info.omp_enabled ? "Yes" : "No");
+    hwText += QString("OpenMP max threads: %1\n")
+                  .arg(info.omp_max_threads);
+
+    qDebug() << "[UI][About] Hardware tab text to display:" << hwText;
+
+    auto* browser = new QTextBrowser(tabs);
+    browser->setFrameShape(QFrame::NoFrame);
+    browser->setReadOnly(true);
+    browser->setText(hwText);
+
+    browser->setStyleSheet(
+        "QTextBrowser { "
+        "  border: none; "
+        "  background-color: #7a7a7a; "
+        "  color: #202020; "
+        "}"
+        );
+
+    tabs->addTab(browser, tr("Hardware"));
+    qDebug() << "[UI][About] addHardwareTab() EXIT";
+}
+
+
 void MainWindow::showAboutDialog()
 {
     qDebug() << "[About][UI] showAboutDialog ENTER";
@@ -1160,6 +1294,7 @@ void MainWindow::showAboutDialog()
     // --- Tabs container ---
     auto* tabs = new QTabWidget(&dlg);
     tabs->setObjectName("aboutTabs");
+    qDebug() << "[About][UI] Created QTabWidget for About dialog";
 
     // --- Overview tab (was: About) ---
     auto* overviewPage   = new QWidget(tabs);
@@ -1172,6 +1307,7 @@ void MainWindow::showAboutDialog()
 
     overviewPage->setLayout(overviewLayout);
     tabs->addTab(overviewPage, tr("Overview"));
+    qDebug() << "[About][UI] Added 'Overview' tab";
 
     // --- Tools tab ---
     auto* toolsPage   = new QWidget(tabs);
@@ -1183,6 +1319,7 @@ void MainWindow::showAboutDialog()
 
     toolsPage->setLayout(toolsLayout);
     tabs->addTab(toolsPage, tr("Tools"));
+    qDebug() << "[About][UI] Added 'Tools' tab";
 
     // --- Disclaimer tab ---
     auto* discPage   = new QWidget(tabs);
@@ -1194,6 +1331,13 @@ void MainWindow::showAboutDialog()
 
     discPage->setLayout(discLayout);
     tabs->addTab(discPage, tr("Disclaimer"));
+    qDebug() << "[About][UI] Added 'Disclaimer' tab";
+
+    // --- Version tab ---
+    addVersionTab(tabs);
+
+    // --- Hardware tab ---
+    addHardwareTab(tabs);
 
     vbox->addWidget(tabs);
 
@@ -1206,6 +1350,7 @@ void MainWindow::showAboutDialog()
     const int rc = dlg.exec();
     qDebug() << "[About][UI] showAboutDialog EXIT rc=" << rc;
 }
+
 
 
 
@@ -1237,7 +1382,6 @@ void MainWindow::addAboutDescription(QVBoxLayout* layout)
     browser->setOpenExternalLinks(true);
     browser->setReadOnly(true);
 
-    // 🔴 CHANGED: light gray background only for this widget
 
     browser->setStyleSheet(
         "QTextBrowser { "

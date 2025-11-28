@@ -346,13 +346,23 @@ bool AppController::initEngine()
     static int init_ok = 0;
 
     std::call_once(once, [&]() {
+        qDebug() << "[LIB][Init] initEngine() ENTER";
+
+        // --- 1) Query version string from the DLL ---
         const char* ver = engine_version();
         qDebug() << "[LIB] engine_version ->" << (ver ? ver : "(null)");
 
+        if (ver) {
+            m_engineHwInfo.engineVersion = QString::fromUtf8(ver);
+        } else {
+            m_engineHwInfo.engineVersion = QStringLiteral("Unknown");
+        }
+
+        // --- 2) Initialize the engine ---
         init_ok = engine_init(0);
         qDebug() << "[LIB] engine_init(0) ->" << init_ok;
 
-        // Query and log init info from the engine
+        // --- 3) Query hardware / backend info from engine ---
         engine_init_info_t info{};
         engine_get_last_init_info(&info);
 
@@ -368,39 +378,105 @@ bool AppController::initEngine()
                  << "omp_max_threads="   << info.omp_max_threads
                  << "cuda_name="         << info.cuda_name;
 
+        // --- 4) Cache all hardware-related fields for later use ---
+        m_engineHwInfo.valid          = (init_ok != 0);
+        m_engineHwInfo.cudaCompiled   = info.cuda_compiled;
+        m_engineHwInfo.hasCuda        = info.has_cuda;
+        m_engineHwInfo.forceCpu       = info.force_cpu;
+        m_engineHwInfo.cudaDeviceIndex= info.cuda_device_index;
+        m_engineHwInfo.cudaCcMajor    = info.cuda_cc_major;
+        m_engineHwInfo.cudaCcMinor    = info.cuda_cc_minor;
+        m_engineHwInfo.cudaMemGb      = info.cuda_mem_gb;
+        m_engineHwInfo.ompEnabled     = info.omp_enabled;
+        m_engineHwInfo.ompMaxThreads  = info.omp_max_threads;
+        m_engineHwInfo.cudaName       = QString::fromUtf8(
+            info.cuda_name ? info.cuda_name : ""
+            );
+
         if (!init_ok) {
+            m_engineReady = false;
+            m_engineHwInfo.backendSummary =
+                QStringLiteral("Engine init FAILED (CPU/GPU backend not available)");
             qWarning() << "[LIB][Init][WRN] engine_init reported FAILURE";
+            qDebug() << "[LIB][Init] Cached hardware info (invalid) for diagnostics";
             return;
         }
 
-        // Pretty summary: CUDA vs CPU
+        m_engineReady = true;
+
+        // --- 5) Build a human-readable backend summary for UI ---
         if (info.cuda_compiled && info.has_cuda && !info.force_cpu) {
-            qDebug() << "[LIB][Init] Backend: CUDA device"
-                     << info.cuda_device_index
-                     << "(" << info.cuda_name << ")"
-                     << "cc=" << info.cuda_cc_major << "." << info.cuda_cc_minor
-                     << "mem=" << info.cuda_mem_gb << "GB"
-                     << "OMP threads=" << (info.omp_enabled ? info.omp_max_threads : 0);
+            // CUDA backend in use
+            m_engineHwInfo.backendSummary =
+                QString("CUDA device %1 (%2), cc %3.%4, %5 GB, OMP threads %6")
+                    .arg(info.cuda_device_index)
+                    .arg(m_engineHwInfo.cudaName)
+                    .arg(info.cuda_cc_major)
+                    .arg(info.cuda_cc_minor)
+                    .arg(info.cuda_mem_gb)
+                    .arg(info.omp_enabled ? info.omp_max_threads : 0);
+
+            qDebug() << "[LIB][Init] Backend:" << m_engineHwInfo.backendSummary;
         } else {
+            // CPU backend in use, build a more descriptive summary
+            QString cpuBackend;
+
             if (!info.cuda_compiled) {
-                qDebug() << "[LIB][Init] Backend: CPU only (CUDA backend not compiled)";
+                cpuBackend = QStringLiteral("CPU only (CUDA backend not compiled)");
             } else if (info.force_cpu) {
-                qDebug() << "[LIB][Init] Backend: CPU (forced CPU mode)";
+                cpuBackend = QStringLiteral("CPU (forced CPU mode)");
             } else if (!info.has_cuda) {
-                qDebug() << "[LIB][Init] Backend: CPU (no usable CUDA device found)";
+                cpuBackend = QStringLiteral("CPU (no usable CUDA device found)");
+            } else {
+                cpuBackend = QStringLiteral("CPU backend (unspecified reason)");
             }
 
+            QString ompInfo;
             if (info.omp_enabled) {
-                qDebug() << "[LIB][Init] CPU parallelism: OpenMP ENABLED,"
-                         << "max_threads=" << info.omp_max_threads;
+                ompInfo = QStringLiteral("OpenMP ENABLED, max_threads=%1")
+                .arg(info.omp_max_threads);
             } else {
-                qDebug() << "[LIB][Init] CPU parallelism: OpenMP DISABLED (single-threaded)";
+                ompInfo = QStringLiteral("OpenMP DISABLED (single-threaded)");
             }
+
+            m_engineHwInfo.backendSummary =
+                cpuBackend + QStringLiteral("; ") + ompInfo;
+
+            qDebug() << "[LIB][Init] Backend summary:" << m_engineHwInfo.backendSummary;
         }
+
+        qDebug() << "[LIB][Init] Cached engine hardware info for later display.";
+        qDebug() << "[LIB][Init] initEngine() LEAVE";
     });
 
     return init_ok != 0;
 }
+
+
+AppController::EngineHardwareInfo AppController::engineHardwareInfo() const
+{
+    if (!m_engineHwInfo.valid) {
+        qWarning() << "[CTRL][LIB] engineHardwareInfo() requested but info is not valid "
+                   << "(engine_init may have failed or not run yet).";
+    } else {
+        qDebug() << "[CTRL][LIB] engineHardwareInfo() requested. Backend:"
+                 << m_engineHwInfo.backendSummary;
+    }
+    return m_engineHwInfo; // return by value for clarity
+}
+
+QString AppController::engineVersion() const
+{
+    if (m_engineHwInfo.engineVersion.isEmpty()) {
+        qWarning() << "[CTRL][LIB] engineVersion() called but engineVersion is empty; "
+                   << "returning 'Unknown'.";
+        return QStringLiteral("Unknown");
+    }
+
+    qDebug() << "[CTRL][LIB] engineVersion() ->" << m_engineHwInfo.engineVersion;
+    return m_engineHwInfo.engineVersion;
+}
+
 
 
 bool AppController::runEngineReconstruction(const QString& pathQ,

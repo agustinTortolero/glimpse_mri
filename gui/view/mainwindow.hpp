@@ -213,6 +213,9 @@ private:
     void addAboutDescription(QVBoxLayout* layout);
     void addAboutBadges(QVBoxLayout* layout);
     void addToolsTab(QVBoxLayout* layout);
+    void addHardwareTab(QTabWidget* tabs);
+
+    void addVersionTab(QTabWidget* tabs);
     void addDisclaimerTab(QVBoxLayout* layout);
 
 };
