@@ -25,19 +25,11 @@ $ExePath       = Join-Path $BuildRel $ExeName
 $DistRoot      = Join-Path $ProjRoot "dist"
 $DistDir       = Join-Path $DistRoot "GlimpseMRI_Release"
 
-# Your GUI-local release libs (next to project, not build)
-$GuiReleaseDir = Join-Path $ProjRoot "release"
-$EngineDllPRJ  = Join-Path $GuiReleaseDir "mri_engine.dll"
-$DicomDllPRJ   = Join-Path $GuiReleaseDir "dicom_io_lib.dll"
+# Your GUI-local release libs (not really used right now but kept for clarity)
+$GuiReleaseDir = $BuildRel
 
-# Build output candidates
-$EngineDllBLD  = Join-Path $BuildRel "mri_engine.dll"
-$DicomDllBLD_1 = Join-Path $BuildRel "dicom_io_lib.dll"
-$DicomDllBLD_2 = Join-Path $BuildRel "dicom__io_lib.dll"  # double underscore (seen previously)
-
-# OpenCV world (release)
-$OpenCvWorldDir = "C:\opencv\opencv\build\x64\vc16\bin"
-$OpenCvWorld    = Join-Path $OpenCvWorldDir "opencv_world490.dll"
+# OpenCV (world DLL) built via vcpkg (release)
+$OpenCvWorldDir = "C:\src\vcpkg\installed\x64-windows\bin"
 
 # vcpkg (release bin dir)
 $VcpkgRoot     = "C:\src\vcpkg\installed\x64-windows"
@@ -67,33 +59,26 @@ New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
 Write-Step "Copy EXE -> $DistDir"
 Copy-Item $ExePath $DistDir -Force
 
-# ---- Run windeployqt (Qt Widgets app) --------------------------------------
-Write-Step "Run windeployqt --release --compiler-runtime --verbose 2 ..."
-$WinDepArgs = @(
-    "--release",
-    "--compiler-runtime",
-    "--verbose", "2",
-    "--no-quick-import",
-    "--no-opengl-sw",
-    "--dir", $DistDir,
-    (Join-Path $DistDir $ExeName)
-)
-
+# ---- Run windeployqt --------------------------------------------------------
+Write-Step "Running windeployqt ..."
 $outLog = Join-Path $DistDir "windeployqt.out.log"
 $errLog = Join-Path $DistDir "windeployqt.err.log"
 
-Write-Info "Redirecting output to:"
-Write-Info " - $outLog"
-Write-Info " - $errLog"
-
 $spArgs = @{
     FilePath               = $WinDeployQt
-    ArgumentList           = $WinDepArgs
-    NoNewWindow            = $true
-    Wait                   = $true
-    PassThru               = $true
+    ArgumentList           = @(
+        "--release",
+        "--no-translations",
+        "--no-compiler-runtime",
+        "--plugindir", (Join-Path $DistDir "plugins"),
+        "--dir", $DistDir,
+        (Join-Path $DistDir $ExeName)
+    )
+    WorkingDirectory       = $DistDir
     RedirectStandardOutput = $outLog
     RedirectStandardError  = $errLog
+    Wait                   = $true
+    PassThru               = $true
 }
 $proc = Start-Process @spArgs
 
@@ -121,95 +106,95 @@ function Copy-FirstFound {
     foreach ($c in $Candidates) {
         if (Test-Path $c) { $found = $c; break }
     }
-    if ($null -ne $found) {
-        if ($NormalizeName) {
-            Write-Step ("Copy " + $Label + " from: " + $found)
-            Copy-Item $found $DestFullPath -Force
-            Write-Info  ("=> Wrote: " + $DestFullPath)
-        } else {
-            $destDir = Split-Path -Parent $DestFullPath
-            Write-Step ("Copy " + $Label + " from: " + $found)
-            Copy-Item $found $destDir -Force
-            Write-Info  ("=> Wrote: " + (Join-Path $destDir (Split-Path -Leaf $found)))
-        }
-        return $true
+    if ($null -eq $found) {
+        Write-Warn ("No candidate found for " + $Label)
+        return $false
     }
-    Write-Warn ("No candidate found for " + $Label + ".")
-    return $false
-}
 
-# ---- Copy engine (release) --------------------------------------------------
-$EngineOk = Copy-FirstFound -Candidates @($EngineDllPRJ, $EngineDllBLD) `
-                            -DestFullPath (Join-Path $DistDir "mri_engine.dll") `
-                            -Label "Engine DLL" -NormalizeName
-
-# ---- Copy DICOM (release, robust) ------------------------------------------
-$DicomOk = Copy-FirstFound -Candidates @($DicomDllPRJ, $DicomDllBLD_1, $DicomDllBLD_2) `
-                           -DestFullPath (Join-Path $DistDir "dicom_io_lib.dll") `
-                           -Label "DICOM DLL" -NormalizeName
-
-if (-not $DicomOk) {
-    $wild = @(
-        (Get-ChildItem -Path $BuildRel      -Filter "dicom*io*lib*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1),
-        (Get-ChildItem -Path $GuiReleaseDir -Filter "dicom*io*lib*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1)
-    ) | Where-Object { $_ -ne $null }
-    if ($wild.Count -gt 0) {
-        $first = $wild[0].FullName
-        Write-Step ("Wildcard hit for DICOM DLL: " + $first)
-        Copy-Item $first (Join-Path $DistDir "dicom_io_lib.dll") -Force
-        Write-Info  ("=> Wrote: " + (Join-Path $DistDir "dicom_io_lib.dll"))
-        $DicomOk = $true
+    if ($NormalizeName) {
+        $destDir  = Split-Path $DestFullPath -Parent
+        $destName = Split-Path $DestFullPath -Leaf
+        $destReal = Join-Path $destDir $destName
+        Write-Step ("Copy " + $Label + " -> " + $destReal)
+        Copy-Item $found $destReal -Force
+        Write-Info  ("=> Wrote: " + $destReal)
     } else {
-        Write-Warn "Wildcard search found no dicom*io*lib*.dll in BuildRel/GUI release."
+        Write-Step ("Copy " + $Label + " -> " + $DestFullPath)
+        Copy-Item $found $DestFullPath -Force
+        Write-Info ("=> Wrote: " + $DestFullPath)
     }
+    return $true
 }
 
-# If both dicom names land in dist, drop the odd one
-$dd = Join-Path $DistDir "dicom__io_lib.dll"
-$dn = Join-Path $DistDir "dicom_io_lib.dll"
-if ((Test-Path $dd) -and (Test-Path $dn)) {
-    Write-Step ("REMOVE duplicate: " + (Split-Path -Leaf $dd))
-    Remove-Item $dd -Force
-}
-
-# ---- OpenCV world (release) -------------------------------------------------
-if (Test-Path $OpenCvWorld) {
-    Write-Step ("Copy OpenCV world: " + $OpenCvWorld)
-    Copy-Item $OpenCvWorld $DistDir -Force
-} else {
-    $candidate = Get-ChildItem -Path $OpenCvWorldDir -Filter "opencv_world*.dll" -ErrorAction SilentlyContinue |
-                 Where-Object { $_.Name -notmatch "d\.dll$" } |
-                 Sort-Object Name -Descending | Select-Object -First 1
-    if ($null -ne $candidate) {
-        Write-Step ("Copy OpenCV world (fallback): " + $candidate.FullName)
-        Copy-Item $candidate.FullName $DistDir -Force
-    } else {
-        Write-Warn ("OpenCV world DLL not found at " + $OpenCvWorldDir)
-    }
-}
-
-# ---- vcpkg runtime DLLs (release) -------------------------------------------
-$copyMasks = @(
-    "ismrmrd*.dll",
-    "pugixml*.dll",
-    "hdf5*.dll",
-    "zlib*.dll",
-    "szip*.dll",
-    "*aec*.dll",
-    "charls*.dll",
-    "dcm*.dll",
-    "of*.dll",
-    "ijg*.dll"
+# ---- Copy MRI engine + DICOM DLLs ------------------------------------------
+$engineCandidates = @(
+    "C:\AgustinTortolero_repos\portafolio\GlimpseMRI\engine\build\Release\mri_engine.dll",
+    "C:\AgustinTortolero_repos\portafolio\GlimpseMRI\engine\build\RelWithDebInfo\mri_engine.dll"
 )
 
-foreach ($mask in $copyMasks) {
-    $files = Get-ChildItem -Path $VcpkgBin -Filter $mask -ErrorAction SilentlyContinue
-    foreach ($f in $files) {
-        if ($f.Name -match "_D\.dll$") { continue }
-        if ($f.Name -match "d\.dll$")  { continue }
-        if ($f.Name -ieq "zlibd1.dll") { continue }
-        Write-Step ("Copy " + $f.Name + " from vcpkg/bin")
-        Copy-Item $f.FullName $DistDir -Force
+$dicomCandidates  = @(
+    "C:\AgustinTortolero_repos\portafolio\GlimpseMRI\dicom_io_lib\build\Release\dicom_io_lib.dll",
+    "C:\AgustinTortolero_repos\portafolio\GlimpseMRI\dicom_io_lib\build\RelWithDebInfo\dicom_io_lib.dll"
+)
+
+Copy-FirstFound -Candidates $engineCandidates `
+                -DestFullPath (Join-Path $DistDir "mri_engine.dll") `
+                -Label "mri_engine.dll" `
+                -NormalizeName
+
+Copy-FirstFound -Candidates $dicomCandidates `
+                -DestFullPath (Join-Path $DistDir "dicom_io_lib.dll") `
+                -Label "dicom_io_lib.dll" `
+                -NormalizeName
+
+# Small safeguard in case old name slipped in
+$dd = Join-Path $DistDir "dicom__io_lib.dll"
+$dn = Join-Path $DistDir "dicom_io_lib.dll"
+if (Test-Path $dd -and -not (Test-Path $dn)) {
+    Write-Step "Renaming dicom__io_lib.dll -> dicom_io_lib.dll"
+    Rename-Item $dd $dn -Force
+}
+
+# ---- Copy OpenCV world DLL from vcpkg --------------------------------------
+if (!(Test-Path $OpenCvWorldDir)) {
+    Write-Warn ("OpenCV path not found: " + $OpenCvWorldDir)
+} else {
+    $OpenCvWorld = Get-ChildItem -Path $OpenCvWorldDir -Filter "opencv_world*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -ne $OpenCvWorld) {
+        Write-Step ("Copy OpenCV world DLL: " + $OpenCvWorld.Name)
+        Copy-Item $OpenCvWorld $DistDir -Force
+    } else {
+        Write-Warn ("No opencv_world*.dll found under " + $OpenCvWorldDir)
+    }
+}
+
+# ---- Copy vcpkg-dependent DLLs ---------------------------------------------
+if (!(Test-Path $VcpkgBin)) {
+    Write-Warn ("vcpkg bin not found: " + $VcpkgBin)
+} else {
+    $copyMasks = @(
+        "fftw3f*.dll",
+        "fftw3*.dll",
+        "pugixml*.dll",
+        "hdf5*.dll",
+        "zlib*.dll",
+        "szip*.dll",
+        "*aec*.dll",
+        "charls*.dll",
+        "dcm*.dll",
+        "of*.dll",
+        "ijg*.dll"
+    )
+
+    foreach ($mask in $copyMasks) {
+        $files = Get-ChildItem -Path $VcpkgBin -Filter $mask -ErrorAction SilentlyContinue
+        foreach ($f in $files) {
+            if ($f.Name -match "_D\.dll$") { continue }
+            if ($f.Name -match "d\.dll$")  { continue }
+            if ($f.Name -ieq "zlibd1.dll") { continue }
+            Write-Step ("Copy " + $f.Name + " from vcpkg/bin")
+            Copy-Item $f.FullName $DistDir -Force
+        }
     }
 }
 
@@ -220,26 +205,6 @@ foreach ($pat in $debugPatterns) {
     foreach ($m in $matches) {
         Write-Step ("PURGE debug DLL: " + $m.Name)
         Remove-Item $m.FullName -Force
-    }
-}
-
-# ---- Optional: tidy non-runtime dev files if any slipped in -----------------
-$trash = @("*.pdb","*.ilk","*.ipdb","*.iobj")
-foreach ($t in $trash) {
-    $m = Get-ChildItem -Path $DistDir -Filter $t -ErrorAction SilentlyContinue
-    foreach ($x in $m) {
-        Write-Step ("REMOVE dev artifact: " + $x.Name)
-        Remove-Item $x.FullName -Force
-    }
-}
-
-# ---- FFTW (release) ---------------------------------------------------------
-$FftwBin = "C:\src\vcpkg\installed\x64-windows\bin"
-foreach ($mask in @('libfftw3-3.dll','libfftw3f-3.dll','fftw3.dll','libfftw3.dll')) {
-    $hits = Get-ChildItem -Path $FftwBin -Filter $mask -ErrorAction SilentlyContinue
-    foreach ($h in $hits) {
-        Write-Step ("Copy FFTW: " + $h.Name)
-        Copy-Item $h.FullName $DistDir -Force
     }
 }
 
@@ -254,6 +219,31 @@ if (Test-Path $CudaBin) {
     }
 } else {
     Write-Warn ("CUDA bin not found at " + $CudaBin + " - GPU path will require system installed CUDA runtime.")
+}
+
+# ---- VC++ redistributable (optional; bundled for installer) -----------------
+$VCRedistCandidates = @(
+    "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Redist\MSVC\14.44.35112\vc_redist.x64.exe",
+    "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Redist\MSVC\v143\vc_redist.x64.exe"
+)
+
+$vcDest = Join-Path $DistDir "vc_redist.x64.exe"
+
+Write-Step "Checking for VC++ redistributable to copy into dist..."
+$vcFound = $false
+foreach ($c in $VCRedistCandidates) {
+    $exists = Test-Path $c
+    Write-Info (" - Candidate: " + $c + "  " + ($(if ($exists) {"OK"} else {"(missing)"})))
+    if ($exists -and -not $vcFound) {
+        Write-Step ("Copy VC++ redistributable from: " + $c)
+        Copy-Item $c $vcDest -Force
+        Write-Info ("=> Wrote: " + $vcDest)
+        $vcFound = $true
+    }
+}
+
+if (-not $vcFound) {
+    Write-Warn "VC++ redistributable not found; installer will not bundle vc_redist.x64.exe"
 }
 
 # ---- Final sanity check -----------------------------------------------------
