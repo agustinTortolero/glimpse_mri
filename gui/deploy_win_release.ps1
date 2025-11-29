@@ -25,7 +25,7 @@ $ExePath       = Join-Path $BuildRel $ExeName
 $DistRoot      = Join-Path $ProjRoot "dist"
 $DistDir       = Join-Path $DistRoot "GlimpseMRI_Release"
 
-# Your GUI-local release libs (not really used right now but kept for clarity)
+# GUI-local release dir (for clarity; currently only the EXE is used)
 $GuiReleaseDir = $BuildRel
 
 # OpenCV (world DLL) built via vcpkg (release)
@@ -85,7 +85,9 @@ $proc = Start-Process @spArgs
 Write-Info ("windeployqt exit code: " + $proc.ExitCode)
 if ($proc.ExitCode -ne 0) {
     Write-Warn "=== windeployqt.err.log (first 200 lines) ==="
-    Get-Content $errLog -ErrorAction SilentlyContinue | Select-Object -First 200 | ForEach-Object { Write-Host $_ }
+    Get-Content $errLog -ErrorAction SilentlyContinue |
+        Select-Object -First 200 |
+        ForEach-Object { Write-Host $_ }
     Fail "windeployqt failed"
 }
 
@@ -132,25 +134,27 @@ $engineCandidates = @(
     "C:\AgustinTortolero_repos\portafolio\GlimpseMRI\engine\build\RelWithDebInfo\mri_engine.dll"
 )
 
+# UPDATED: use the actual dicom_io_lib paths you found
 $dicomCandidates  = @(
-    "C:\AgustinTortolero_repos\portafolio\GlimpseMRI\dicom_io_lib\build\Release\dicom_io_lib.dll",
-    "C:\AgustinTortolero_repos\portafolio\GlimpseMRI\dicom_io_lib\build\RelWithDebInfo\dicom_io_lib.dll"
+    "C:\AgustinTortolero_repos\portafolio\GlimpseMRI\dicom_io_lib\build\Desktop_Qt_6_10_0_MSVC2022_64bit-Release\dicom_io_lib.dll",
+    "C:\AgustinTortolero_repos\portafolio\GlimpseMRI\dicom_io_lib\bin\dicom_io_lib.dll",
+    "C:\AgustinTortolero_repos\portafolio\GlimpseMRI\gui\build\Desktop_Qt_6_10_0_MSVC2022_64bit-Release\release\dicom_io_lib.dll"
 )
 
-Copy-FirstFound -Candidates $engineCandidates `
-                -DestFullPath (Join-Path $DistDir "mri_engine.dll") `
-                -Label "mri_engine.dll" `
-                -NormalizeName
+[void](Copy-FirstFound -Candidates $engineCandidates `
+                       -DestFullPath (Join-Path $DistDir "mri_engine.dll") `
+                       -Label "mri_engine.dll" `
+                       -NormalizeName)
 
-Copy-FirstFound -Candidates $dicomCandidates `
-                -DestFullPath (Join-Path $DistDir "dicom_io_lib.dll") `
-                -Label "dicom_io_lib.dll" `
-                -NormalizeName
+[void](Copy-FirstFound -Candidates $dicomCandidates `
+                       -DestFullPath (Join-Path $DistDir "dicom_io_lib.dll") `
+                       -Label "dicom_io_lib.dll" `
+                       -NormalizeName)
 
 # Small safeguard in case old name slipped in
 $dd = Join-Path $DistDir "dicom__io_lib.dll"
 $dn = Join-Path $DistDir "dicom_io_lib.dll"
-if (Test-Path $dd -and -not (Test-Path $dn)) {
+if ((Test-Path $dd) -and -not (Test-Path $dn)) {
     Write-Step "Renaming dicom__io_lib.dll -> dicom_io_lib.dll"
     Rename-Item $dd $dn -Force
 }
@@ -162,7 +166,9 @@ if (!(Test-Path $OpenCvWorldDir)) {
     $OpenCvWorld = Get-ChildItem -Path $OpenCvWorldDir -Filter "opencv_world*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($null -ne $OpenCvWorld) {
         Write-Step ("Copy OpenCV world DLL: " + $OpenCvWorld.Name)
-        Copy-Item $OpenCvWorld $DistDir -Force
+        Write-Info ("    Source: " + $OpenCvWorld.FullName)
+        Write-Info ("    Dest  : " + $DistDir)
+        Copy-Item $OpenCvWorld.FullName $DistDir -Force
     } else {
         Write-Warn ("No opencv_world*.dll found under " + $OpenCvWorldDir)
     }
@@ -212,10 +218,11 @@ foreach ($pat in $debugPatterns) {
 $CudaBin = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\bin"
 if (Test-Path $CudaBin) {
     foreach ($mask in @('cudart64*.dll','cufft64*.dll','cublas64*.dll','cublasLt64*.dll')) {
-        Get-ChildItem -Path $CudaBin -Filter $mask -ErrorAction SilentlyContinue | ForEach-Object {
-            Write-Step ("Copy CUDA runtime: " + $_.Name)
-            Copy-Item $_.FullName $DistDir -Force
-        }
+        Get-ChildItem -Path $CudaBin -Filter $mask -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                Write-Step ("Copy CUDA runtime: " + $_.Name)
+                Copy-Item $_.FullName $DistDir -Force
+            }
     }
 } else {
     Write-Warn ("CUDA bin not found at " + $CudaBin + " - GPU path will require system installed CUDA runtime.")
@@ -268,8 +275,10 @@ if ($missing.Count -gt 0) {
 # ---- Final listing ----------------------------------------------------------
 Write-Host ""
 Write-Info ("[LIST] " + $DistDir)
-Get-ChildItem $DistDir | Select-Object Name, Length | Sort-Object Name | Format-Table -AutoSize
+Get-ChildItem $DistDir |
+    Select-Object Name, Length |
+    Sort-Object Name |
+    Format-Table -AutoSize
 
 Write-Host ""
 Write-Step ("Deploy complete. You can now run: " + (Join-Path $DistDir $ExeName))
-
