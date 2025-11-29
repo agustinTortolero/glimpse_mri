@@ -4,6 +4,8 @@ Glimpse MRI is a high-performance MRI reconstruction application with image view
 
 Built with C++, CUDA, and Qt, Glimpse MRI delivers a clean, responsive interface while offloading heavy computation to a custom high-performance, heterogeneous MRI engine. The engine targets modern CPUs and GPUs using OpenMP for multi-threading, FFTW for CPU-side Fourier transforms, and custom CUDA kernels plus NVIDIA cuFFT and NVIDIA cuBLAS for GPU acceleration, enabling fast reconstruction and smooth, real-time interaction.
 
+Developed by **Agustín Tortolero**.
+
 ---
 
 ## Features
@@ -83,3 +85,4 @@ Once dependencies are installed and configured, you can:
    ```bash
    git clone https://github.com/agustinTortolero/glimpse_mri.git
    cd glimpse_mri
+
