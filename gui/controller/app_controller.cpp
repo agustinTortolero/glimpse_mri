@@ -60,13 +60,9 @@ AppController::AppController(MainWindow* view)
         return;
     }
 
-    // Wire all UI signals/slots
     initViewConnections();
 
-    // Configure keyboard shortcuts for slice navigation
     initSliceNavigationShortcuts();
-
-
 
     // Initial UI state
     m_view->beginNewImageCycle();
