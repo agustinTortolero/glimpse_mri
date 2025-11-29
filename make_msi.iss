@@ -131,19 +131,26 @@ begin
   DisclaimerText.Left := 0;
   DisclaimerText.Top := 0;
   DisclaimerText.Width := DisclaimerPage.SurfaceWidth;
-  DisclaimerText.Height := DisclaimerPage.SurfaceHeight - ScaleY(80);
+  { Leave a bit more room at the bottom for a taller, multi-line checkbox }
+  DisclaimerText.Height := DisclaimerPage.SurfaceHeight - ScaleY(120);
   DisclaimerText.AutoSize := False;
   DisclaimerText.WordWrap := True;
   DisclaimerText.Caption := Msg;
 
-  { Checkbox the user must tick }
+  { Checkbox the user must tick (shorter multi-line caption + extra height) }
   DisclaimerCheckBox := TNewCheckBox.Create(DisclaimerPage);
   DisclaimerCheckBox.Parent := DisclaimerPage.Surface;
   DisclaimerCheckBox.Left := 0;
-  DisclaimerCheckBox.Top := DisclaimerText.Top + DisclaimerText.Height + ScaleY(12);
   DisclaimerCheckBox.Width := DisclaimerPage.SurfaceWidth;
+
+  { 3 short lines so it doesn't get horizontally clipped on 4K / HiDPI }
   DisclaimerCheckBox.Caption :=
-    'I understand that Glimpse MRI is NOT a medical device and must not be used for clinical purposes.';
+    'I understand that Glimpse MRI is NOT a medical device.';
+
+  { Give the checkbox enough vertical space for 3 lines }
+  DisclaimerCheckBox.Height := ScaleY(60);
+  DisclaimerCheckBox.Top :=
+    DisclaimerText.Top + DisclaimerText.Height + ScaleY(8);
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
@@ -159,4 +166,3 @@ begin
     Result := False;
   end;
 end;
-
