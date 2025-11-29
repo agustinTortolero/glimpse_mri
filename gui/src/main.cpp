@@ -293,11 +293,9 @@ int main(int argc, char** argv) {
             log_and_print(log, ctx.str());
         }
 
+    QApplication GlimpseMRI(argc, argv);
 
-        QApplication GlimpseMRI(argc, argv);
-
-        // --- App icon (taskbar / dock / titlebar) ----------------------------
-        QApplication::setWindowIcon(buildAppIcon());
+    QApplication::setWindowIcon(buildAppIcon());
 
 #ifdef QT_VERSION_STR
         {

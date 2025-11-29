@@ -134,7 +134,6 @@ $engineCandidates = @(
     "C:\AgustinTortolero_repos\portafolio\GlimpseMRI\engine\build\RelWithDebInfo\mri_engine.dll"
 )
 
-# UPDATED: use the actual dicom_io_lib paths you found
 $dicomCandidates  = @(
     "C:\AgustinTortolero_repos\portafolio\GlimpseMRI\dicom_io_lib\build\Desktop_Qt_6_10_0_MSVC2022_64bit-Release\dicom_io_lib.dll",
     "C:\AgustinTortolero_repos\portafolio\GlimpseMRI\dicom_io_lib\bin\dicom_io_lib.dll",
@@ -159,19 +158,36 @@ if ((Test-Path $dd) -and -not (Test-Path $dn)) {
     Rename-Item $dd $dn -Force
 }
 
-# ---- Copy OpenCV world DLL from vcpkg --------------------------------------
+# ---- Copy OpenCV world DLLs from vcpkg -------------------------------------
 if (!(Test-Path $OpenCvWorldDir)) {
     Write-Warn ("OpenCV path not found: " + $OpenCvWorldDir)
 } else {
-    $OpenCvWorld = Get-ChildItem -Path $OpenCvWorldDir -Filter "opencv_world*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($null -ne $OpenCvWorld) {
-        Write-Step ("Copy OpenCV world DLL: " + $OpenCvWorld.Name)
-        Write-Info ("    Source: " + $OpenCvWorld.FullName)
-        Write-Info ("    Dest  : " + $DistDir)
-        Copy-Item $OpenCvWorld.FullName $DistDir -Force
+    # Force array, even if only one DLL is returned
+    $OpenCvWorlds = @(Get-ChildItem -Path $OpenCvWorldDir -Filter "opencv_world*.dll" -ErrorAction SilentlyContinue)
+    if ($OpenCvWorlds.Count -gt 0) {
+        foreach ($dll in $OpenCvWorlds) {
+            Write-Step ("Copy OpenCV world DLL: " + $dll.Name)
+            Write-Info ("    Source: " + $dll.FullName)
+            Write-Info ("    Dest  : " + $DistDir)
+            Copy-Item $dll.FullName $DistDir -Force
+        }
     } else {
         Write-Warn ("No opencv_world*.dll found under " + $OpenCvWorldDir)
     }
+}
+
+# Extra safety: ensure opencv_world490.dll is present in dist if we have it anywhere
+$opencv490Dist = Join-Path $DistDir "opencv_world490.dll"
+if (!(Test-Path $opencv490Dist)) {
+    $OpenCv490Candidates = @(
+        "C:\src\vcpkg\installed\x64-windows\bin\opencv_world490.dll",
+        "C:\opencv\opencv\build\x64\vc16\bin\opencv_world490.dll"
+    )
+
+    [void](Copy-FirstFound -Candidates $OpenCv490Candidates `
+                           -DestFullPath $opencv490Dist `
+                           -Label "opencv_world490.dll" `
+                           -NormalizeName)
 }
 
 # ---- Copy vcpkg-dependent DLLs ---------------------------------------------
@@ -282,3 +298,4 @@ Get-ChildItem $DistDir |
 
 Write-Host ""
 Write-Step ("Deploy complete. You can now run: " + (Join-Path $DistDir $ExeName))
+
