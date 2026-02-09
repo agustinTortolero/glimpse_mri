@@ -20,6 +20,12 @@ CONFIG(debug, debug|release) {
     BUILD_TYPE = Release
 }
 
+CONFIG(debug, debug|release) {
+    DEFINES += SHOW_QMAKE_PATH=1
+}
+
+
+
 # Qt version (qmake built-in)
 QT_BUILD_VERSION = $$QT_VERSION
 
@@ -76,6 +82,24 @@ win32 {
     message([ver] WIN_PWD=$$WIN_PWD)
     message([ver] GIT_BIN=$$GIT_BIN)
     message([ver] GIT_IS_REPO=$$GIT_IS_REPO)
+
+QT_BIN = $$[QT_INSTALL_BINS]
+WINDEPLOYQT = $$QT_BIN/windeployqt.exe
+
+# After building and staging your own DLLs, deploy Qt runtime next to the exe
+exists($$WINDEPLOYQT) {
+    message([win][qt] windeployqt=$$WINDEPLOYQT)
+
+    # Adjust exe name/path if yours differs
+    TARGET_EXE = $$OUT_PWD/release/glimpseMRI.exe
+
+    QMAKE_POST_LINK += $$quote("\"$$WINDEPLOYQT\" --release --no-translations --compiler-runtime \"$$TARGET_EXE\"")
+    QMAKE_POST_LINK += $$quote(cmd /c echo [qt] windeployqt finished)
+} else {
+    message([win][qt][WARN] windeployqt not found at $$WINDEPLOYQT)
+}
+
+
 }
 
 

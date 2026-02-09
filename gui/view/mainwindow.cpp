@@ -1429,7 +1429,7 @@ void MainWindow::addAboutDescription(QVBoxLayout* layout)
 <p>The engine targets modern CPUs and GPUs multi-threading with <b>OpenMP</b>, CPU-side Fourier transforms with <b>FFTW (Fastest Fourier Transform in the West)</b>, and GPU acceleration via custom <b>CUDA</b> kernels plus <b>NVIDIA cuFFT</b> and <b>NVIDIA cuBLAS</b>, enabling fast reconstruction and smooth, real-time interaction.</p>
 
 <p>Designed and built by Agustin Tortolero.</p>
-<p><b>Source code</b>: <a href='https://github.com/agustinTortolero/GlimpseMRI'>github.com/agustinTortolero/GlimpseMRI</a></p>
+<p><b>Source code</b>: <a href='https://github.com/agustinTortolero/glimpse_mri'>github.com/agustinTortolero/glimpse_mri</a></p>
 </div>
 )";
 
