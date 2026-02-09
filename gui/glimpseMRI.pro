@@ -6,6 +6,134 @@ TEMPLATE = app
 CONFIG  += c++17 release
 CONFIG  -= debug
 
+# ============================================================
+# Version / Build fingerprint (auto embedded into the binary)
+# ============================================================
+
+# Single source of truth for GUI version
+VERSION = 1.1.0
+
+# Build type (even if you force release, it will show Release)
+CONFIG(debug, debug|release) {
+    BUILD_TYPE = Debug
+} else {
+    BUILD_TYPE = Release
+}
+
+# Qt version (qmake built-in)
+QT_BUILD_VERSION = $$QT_VERSION
+
+# qmake executable path (qmake built-in)
+QMAKE_PATH = $$QMAKE_QMAKE
+
+# qmake version (QMAKE_VERSION is sometimes empty on Windows, so query qmake)
+QMAKE_BUILD_VERSION = $$QMAKE_VERSION
+win32:isEmpty(QMAKE_BUILD_VERSION) {
+    QMAKE_BUILD_VERSION = $$system($$QMAKE_QMAKE -query QMAKE_VERSION)
+}
+unix:!win32:isEmpty(QMAKE_BUILD_VERSION) {
+    QMAKE_BUILD_VERSION = $$system($$QMAKE_QMAKE -query QMAKE_VERSION 2>/dev/null)
+}
+
+# Git + Timestamp (best-effort; no build break if missing)
+GIT_BIN = git
+GIT_SHA = Unknown
+GIT_DESCRIBE = Unknown
+BUILD_TIMESTAMP = Unknown
+
+win32 {
+    # Use a Windows-native path for -C (backslashes)
+    WIN_PWD = $$system_path($$PWD)
+
+    # Prefer well-known Git for Windows locations (works even if PATH is missing)
+    exists("C:/Program Files/Git/cmd/git.exe") {
+        GIT_BIN = "C:/Program Files/Git/cmd/git.exe"
+    } else:exists("C:/Program Files/Git/bin/git.exe") {
+        GIT_BIN = "C:/Program Files/Git/bin/git.exe"
+    } else:exists("C:/Program Files (x86)/Git/cmd/git.exe") {
+        GIT_BIN = "C:/Program Files (x86)/Git/cmd/git.exe"
+    } else:exists("C:/Program Files (x86)/Git/bin/git.exe") {
+        GIT_BIN = "C:/Program Files (x86)/Git/bin/git.exe"
+    } else {
+        # Fallback (only works if git is on PATH)
+        GIT_BIN = git
+    }
+
+    # Optional: check repo status (helps debugging)
+    GIT_IS_REPO = $$system("\"$$GIT_BIN\" -C \"$$WIN_PWD\" rev-parse --is-inside-work-tree 2>NUL")
+    GIT_IS_REPO = $$replace(GIT_IS_REPO, \\s, )
+
+    contains(GIT_IS_REPO, true) {
+        # Commit hash (12 chars) + describe
+        GIT_SHA      = $$system("\"$$GIT_BIN\" -C \"$$WIN_PWD\" rev-parse --short=12 HEAD 2>NUL")
+        GIT_DESCRIBE = $$system("\"$$GIT_BIN\" -C \"$$WIN_PWD\" describe --tags --always --dirty --abbrev=12 2>NUL")
+    }
+
+    # Timestamp (no newline)
+    BUILD_TIMESTAMP = $$system(powershell -NoProfile -Command "[Console]::Write((Get-Date).ToString('yyyy-MM-ddTHH:mm:ss'))")
+
+    # Debug visibility during qmake
+    message([ver] WIN_PWD=$$WIN_PWD)
+    message([ver] GIT_BIN=$$GIT_BIN)
+    message([ver] GIT_IS_REPO=$$GIT_IS_REPO)
+}
+
+
+unix:!win32 {
+    GIT_SHA      = $$system(git -C $$PWD rev-parse --short=12 HEAD 2>/dev/null)
+    GIT_DESCRIBE = $$system(git -C $$PWD describe --tags --always --dirty 2>/dev/null)
+    BUILD_TIMESTAMP = $$system(date "+%Y-%m-%dT%H:%M:%S")
+}
+
+# Robust cleanup: remove ALL whitespace (CR/LF/tabs/spaces)
+GIT_SHA            = $$replace(GIT_SHA, \\s, )
+GIT_DESCRIBE       = $$replace(GIT_DESCRIBE, \\s, )
+BUILD_TIMESTAMP    = $$replace(BUILD_TIMESTAMP, \\s, )
+QMAKE_BUILD_VERSION= $$replace(QMAKE_BUILD_VERSION, \\s, )
+
+
+# Keep spaces in paths; remove only CR/LF/TAB
+GIT_BIN   = $$replace(GIT_BIN, \\r, )
+GIT_BIN   = $$replace(GIT_BIN, \\n, )
+GIT_BIN   = $$replace(GIT_BIN, \\t, )
+QMAKE_PATH= $$replace(QMAKE_PATH, \\r, )
+QMAKE_PATH= $$replace(QMAKE_PATH, \\n, )
+QMAKE_PATH= $$replace(QMAKE_PATH, \\t, )
+# Extra safety: remove quotes if any
+GIT_BIN            = $$replace(GIT_BIN, \", )
+GIT_SHA            = $$replace(GIT_SHA, \", )
+GIT_DESCRIBE       = $$replace(GIT_DESCRIBE, \", )
+BUILD_TIMESTAMP    = $$replace(BUILD_TIMESTAMP, \", )
+QMAKE_BUILD_VERSION= $$replace(QMAKE_BUILD_VERSION, \", )
+QMAKE_PATH         = $$replace(QMAKE_PATH, \", )
+
+isEmpty(GIT_SHA)            { GIT_SHA = Unknown }
+isEmpty(GIT_DESCRIBE)       { GIT_DESCRIBE = Unknown }
+isEmpty(BUILD_TIMESTAMP)    { BUILD_TIMESTAMP = Unknown }
+isEmpty(QMAKE_BUILD_VERSION){ QMAKE_BUILD_VERSION = Unknown }
+isEmpty(QMAKE_PATH)         { QMAKE_PATH = Unknown }
+
+# Export as C/C++ macros (string literals)
+DEFINES += GUI_VERSION_STR=\\\"$$VERSION\\\"
+DEFINES += BUILD_TYPE_STR=\\\"$$BUILD_TYPE\\\"
+DEFINES += GIT_SHA_STR=\\\"$$GIT_SHA\\\"
+DEFINES += GIT_DESCRIBE_STR=\\\"$$GIT_DESCRIBE\\\"
+DEFINES += BUILD_TIMESTAMP_STR=\\\"$$BUILD_TIMESTAMP\\\"
+DEFINES += QT_BUILD_VERSION_STR=\\\"$$QT_BUILD_VERSION\\\"
+DEFINES += QMAKE_BUILD_VERSION_STR=\\\"$$QMAKE_BUILD_VERSION\\\"
+DEFINES += QMAKE_PATH_STR=\\\"$$QMAKE_QMAKE\\\"
+
+# Visible during qmake step
+message([ver] GUI_VERSION=$$VERSION)
+message([ver] BUILD_TYPE=$$BUILD_TYPE)
+message([ver] QT_BUILD_VERSION=$$QT_BUILD_VERSION)
+message([ver] QMAKE_BUILD_VERSION=$$QMAKE_BUILD_VERSION)
+message([ver] GIT_DESCRIBE=$$GIT_DESCRIBE)
+message([ver] GIT_SHA=$$GIT_SHA)
+message([ver] BUILD_TIMESTAMP=$$BUILD_TIMESTAMP)
+
+
+
 # ---------- Common project layout ----------
 OBJECTS_DIR = $$OUT_PWD/obj
 MOC_DIR     = $$OUT_PWD/moc
@@ -30,6 +158,8 @@ HEADERS += \
     model/engine_api.h \
     model/io.hpp \
     controller/app_controller.hpp \
+    src/build_info.hpp \
+    src/build_info.hpp \
     src/logger.hpp \
     view/mainwindow.hpp \
     src/image_utils.hpp \

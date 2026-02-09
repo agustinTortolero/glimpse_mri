@@ -52,7 +52,9 @@
 #include <opencv2/imgproc.hpp>
 
 #include "engine_api.h"
-
+#include <QSysInfo>
+#include <QLibraryInfo>
+#include "build_info.hpp"
 
 using namespace std::chrono_literals;
 
@@ -1156,20 +1158,76 @@ void MainWindow::addVersionTab(QTabWidget* tabs)
 {
     qDebug() << "[UI][About] addVersionTab() ENTER";
 
-    // GUI version – later you can make this a macro from CMake/qmake
-    const QString guiVersion = QStringLiteral("1.0");
+    // From .pro DEFINES (or fallback from build_info.hpp)
+    const QString guiVersion     = QString::fromLatin1(GUI_VERSION_STR);
+    const QString buildType      = QString::fromLatin1(BUILD_TYPE_STR);
+    const QString gitSha         = QString::fromLatin1(GIT_SHA_STR);
+    const QString gitDescribe    = QString::fromLatin1(GIT_DESCRIBE_STR);
+    const QString buildTimestamp = QString::fromLatin1(BUILD_TIMESTAMP_STR);
+    const QString qtQmakeVersion = QString::fromLatin1(QT_BUILD_VERSION_STR);
+    const QString qmakeVersion   = QString::fromLatin1(QMAKE_BUILD_VERSION_STR);
+    const QString qmakePath      = QString::fromLatin1(QMAKE_PATH_STR);
 
+    qDebug() << "[UI][About] guiVersion =" << guiVersion;
+    qDebug() << "[UI][About] buildType  =" << buildType;
+    qDebug() << "[UI][About] git        =" << gitDescribe << "(" << gitSha << ")";
+    qDebug() << "[UI][About] builtAt    =" << buildTimestamp;
+    qDebug() << "[UI][About] qt(qmake)  =" << qtQmakeVersion;
+    qDebug() << "[UI][About] qmake      =" << qmakeVersion;
+    qDebug() << "[UI][About] qmakePath  =" << qmakePath;
+
+    // Engine version
     const char* verCStr = engine_version();
     QString engineVersion = verCStr ? QString::fromUtf8(verCStr)
                                     : QStringLiteral("Unknown");
 
     qDebug() << "[UI][About] engine_version() ->" << engineVersion;
 
+    // Qt runtime/compile info
+    const QString qtCompile = QString::fromLatin1(QT_VERSION_STR);
+    const QString qtRuntime = QString::fromLatin1(qVersion());
+    const QString qtLibInfo = QLibraryInfo::version().toString();
+
+    qDebug() << "[UI][About] Qt compile-time =" << qtCompile;
+    qDebug() << "[UI][About] Qt runtime     =" << qtRuntime;
+    qDebug() << "[UI][About] Qt (QLibraryInfo)=" << qtLibInfo;
+
+    // OS / ABI
+    const QString osPretty = QSysInfo::prettyProductName();
+    const QString kernel   = QString("%1 %2").arg(QSysInfo::kernelType(),
+                                                QSysInfo::kernelVersion());
+    const QString arch = QSysInfo::currentCpuArchitecture();
+    const QString abi  = QSysInfo::buildAbi();
+
+    qDebug() << "[UI][About] OS=" << osPretty << "Kernel=" << kernel
+             << "Arch=" << arch << "ABI=" << abi;
+
+    // Build the text
     QString versionText;
     versionText += QString("GUI: %1\n").arg(guiVersion);
     versionText += QString("MRI Engine: %1\n").arg(engineVersion);
+    versionText += "\n";
 
-    qDebug() << "[UI][About] Version tab text to display:" << versionText;
+    versionText += QString("Build type: %1\n").arg(buildType);
+    versionText += QString("Git commit: %1\n").arg(gitSha);
+    versionText += QString("Git describe: %1\n").arg(gitDescribe);
+    versionText += QString("Built at: %1\n").arg(buildTimestamp);
+    versionText += "\n";
+
+    versionText += QString("Qt (compile): %1\n").arg(qtCompile);
+    versionText += QString("Qt (runtime): %1\n").arg(qtRuntime);
+    versionText += QString("Qt (QLibraryInfo): %1\n").arg(qtLibInfo);
+    versionText += QString("Qt (qmake): %1\n").arg(qtQmakeVersion);
+    versionText += QString("qmake: %1\n").arg(qmakeVersion);
+    versionText += QString("qmake path: %1\n").arg(qmakePath);
+    versionText += "\n";
+
+    versionText += QString("OS: %1\n").arg(osPretty);
+    versionText += QString("Kernel: %1\n").arg(kernel);
+    versionText += QString("Arch: %1\n").arg(arch);
+    versionText += QString("ABI: %1\n").arg(abi);
+
+    qDebug() << "[UI][About] Version tab text to display:\n" << versionText;
 
     auto* browser = new QTextBrowser(tabs);
     browser->setFrameShape(QFrame::NoFrame);
