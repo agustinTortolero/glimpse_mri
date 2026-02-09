@@ -101,3 +101,7 @@ gui/dist/
 # ---- OS noise ----
 .DS_Store
 Thumbs.db
+
+# local helper scripts
+git_push_glimpse_updates.ps1
+
