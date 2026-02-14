@@ -77,4 +77,69 @@ Pre-built Windows binaries (when available) can be found on the
 ```bash
 git clone https://github.com/agustinTortolero/glimpse_mri.git
 cd glimpse_mri
+```
+
+---
+
+### Jetson (Orin Nano / JetPack / Ubuntu)
+
+This repository includes scripts to install dependencies and build the full project (engine + GUI) on Jetson.
+
+#### 2) One-time prerequisites
+
+```bash
+chmod +x prerequisites.sh build_jetson.shh
+./prerequisites.sh
+```
+
+#### 3) Build (engine + GUI)
+
+First build:
+
+```bash
+./build_jetson.shh --clean
+```
+
+Incremental rebuild (after `git pull`):
+
+```bash
+./build_jetson.shh
+```
+
+#### 4) Run
+
+```bash
+./build_gui_Release/glimpseMRI
+```
+
+#### Optional: create a clickable desktop icon
+
+You can create a desktop/app-menu launcher after a successful build:
+
+```bash
+./build_jetson.shh --install-desktop
+```
+
+> On some GNOME setups you may need to right-click the desktop icon and choose **“Allow Launching”** once.
+
+---
+
+### Windows (Visual Studio + Qt Creator)
+
+Windows is the primary development target.
+
+High-level requirements:
+
+- Microsoft Visual Studio 2022  
+- Qt 6 (matching your MSVC toolchain)  
+- CUDA Toolkit (for GPU acceleration)  
+- Third-party libs such as FFTW, HDF5, ISMRMRD, OpenCV, pugixml (depending on your build configuration)
+
+Clone the repository:
+
+```bash
+git clone https://github.com/agustinTortolero/glimpse_mri.git
+cd glimpse_mri
+```
+
 
