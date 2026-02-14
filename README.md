@@ -70,19 +70,11 @@ Linux support is planned as part of future work.
 Pre-built Windows binaries (when available) can be found on the  
 ➡️ **[Releases page](../../releases)**
 
-### Build from Source (high-level overview)
+### Build from Source
 
-A detailed build guide is planned. At a high level, you will need:
+#### 1) Clone the repository
 
-- Microsoft Visual Studio 2022
-- Qt 6 (matching your MSVC toolchain)
-- CUDA Toolkit (for GPU acceleration)
-- FFTW, cuFFT, cuBLAS, HDF5, and other third-party dependencies
-
-Once dependencies are installed and configured, you can:
-
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/agustinTortolero/glimpse_mri.git
-   cd glimpse_mri
+```bash
+git clone https://github.com/agustinTortolero/glimpse_mri.git
+cd glimpse_mri
 
