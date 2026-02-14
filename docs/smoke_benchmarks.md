@@ -19,10 +19,13 @@ The value is taken from the log line:
 
 ## Results (same dataset)
 
-| System | Total recon time (ms) | Total recon time (s) |
-|---|---:|---:|
-| Laptop GPU | 14020 | 14.0 |
-| Jetson Orin Nano | 78513 | 78.5 |
+## Results (same dataset)
+
+| System | Total recon time (ms) |
+|---|---:|
+| Laptop GPU | 14020 |
+| Jetson Orin Nano | 78513 |
+
 
 > Notes:
 > - Single-run smoke tests (expect variance).
