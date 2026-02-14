@@ -17,8 +17,6 @@ The value is taken from the log line:
 
 ---
 
----
-
 ## Systems Used
 
 ### Laptop (Windows)
@@ -40,8 +38,6 @@ Software stack used during the test:
 - CUDA: `12.6` (JetPack)
 
 ---
-
-
 
 ## Dataset Used + Attribution
 
