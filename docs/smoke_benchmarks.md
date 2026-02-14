@@ -28,8 +28,7 @@ The value is taken from the log line:
 
 
 > Notes:
-> - Single-run smoke tests (expect variance).
-> - For fairer Jetson timing, consider enabling max performance mode (see below).
+> - GPU timings
 
 ---
 
