@@ -40,15 +40,6 @@ Build cuda_12.6.r12.6/compiler.34714021_0
 ```
 
 
-## Where to place this file in the repo
-
-Recommended path in the repo:
-
-- `docs/build_jetson_orin_nano.md`
-
-If you add it there, you can link it from your main `README.md` under a **Jetson** section.
-
----
 
 ## 0) JetPack + CUDA sanity
 
