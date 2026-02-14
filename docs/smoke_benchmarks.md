@@ -63,7 +63,7 @@ Attribution:
 ## Results
 | System | GPU total recon time (ms) | CPU total recon time (ms) |
 |---|---:|---:|
-| Laptop GPU | 14020 | 1744 |
+| Laptop GPU | 14020 | 17144 |
 | Jetson Orin Nano | 78513 | 89817 |
 
 
