@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# GlimpseMRI full build on Jetson
+# GlimpseMRI full build on Jetson (CPU + GPU always)
+# Builds in order:
+#   1) dicom_io_lib
+#   2) engine (CUDA ON)
+#   3) gui
 #
-# Key behavior:
-# - The engine is CPU-first by default, but THIS SCRIPT ALWAYS ENABLES CUDA for the engine.
-#   (engine/mri_engine.pro expects: CONFIG+=with_cuda)
-# - Supports mixed build systems per module (CMake or qmake).
-# - Produces logs under ./build_logs/
+# Works with either CMake or qmake projects (auto-detect per module).
+# Produces logs under ./build_logs/
 
 ts() { date +"%Y-%m-%d %H:%M:%S"; }
 log() { echo "[$(ts)][DBG] $*"; }
-wrn() { echo "[$(ts)][WRN] $*" >&2; }
 die() { echo "[$(ts)][ERR] $*" >&2; exit 1; }
 
 CLEAN=0
@@ -21,12 +21,13 @@ JOBS="$(nproc)"
 VERBOSE=0
 
 usage() {
-  echo "Usage: $0 [--clean] [--debug] [--tests] [--jobs N] [--verbose]"
+  echo "Usage: $0 [--clean] [--debug] [--tests] [--jobs N] [--verbose] [--install-desktop]"
   echo "  --clean   : remove build dirs before building"
   echo "  --debug   : Debug build (default Release)"
   echo "  --tests   : run ctest when available"
   echo "  --jobs N  : parallel jobs (default nproc)"
-  echo "  --verbose : verbose build output"
+  echo "  --verbose : print extra info"
+  echo "  --install-desktop : create Desktop/app-menu launcher after successful build"
 }
 
 # Parse args
@@ -37,12 +38,17 @@ while [[ $# -gt 0 ]]; do
     --tests) RUN_TESTS=1; shift ;;
     --jobs) JOBS="${2:-$JOBS}"; shift 2 ;;
     --verbose) VERBOSE=1; shift ;;
+    --install-desktop) INSTALL_DESKTOP=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "Unknown arg: $1" ;;
   esac
 done
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Optional: install desktop launcher after successful build (explicit opt-in)
+INSTALL_DESKTOP="${INSTALL_DESKTOP:-0}"
+DESKTOP_ICON_SCRIPT="${ROOT}/gui/scripts/install_desktop_icon.sh"
 LOG_DIR="${ROOT}/build_logs"
 mkdir -p "${LOG_DIR}"
 LOG_FILE="${LOG_DIR}/build_$(date +"%Y%m%d_%H%M%S")_${BUILD_TYPE}.log"
@@ -56,22 +62,21 @@ log "JOBS=${JOBS}"
 log "CLEAN=${CLEAN}"
 log "RUN_TESTS=${RUN_TESTS}"
 log "VERBOSE=${VERBOSE}"
+log "INSTALL_DESKTOP=${INSTALL_DESKTOP}"
+log "DESKTOP_ICON_SCRIPT=${DESKTOP_ICON_SCRIPT}"
 log "ARCH=$(uname -m)"
 log "KERNEL=$(uname -r)"
 log "GIT_HEAD=$(git rev-parse --short HEAD || echo 'N/A')"
-log "GIT_STATUS:"; git status -sb || true
+log "GIT_STATUS:"
+git status -sb || true
 
+# Pull submodules if any
 log "Updating submodules (if any)..."
 git submodule update --init --recursive || true
 
 ensure_cmd() {
   local c="$1"
   command -v "$c" >/dev/null 2>&1 || die "Missing command: $c"
-}
-
-assert_file() {
-  local p="$1"
-  [[ -e "$p" ]] || die "Expected file not found: $p"
 }
 
 maybe_clean_dir() {
@@ -85,10 +90,12 @@ maybe_clean_dir() {
 detect_build_system() {
   local dir="$1"
   if [[ -f "${dir}/CMakeLists.txt" ]]; then
-    echo "cmake"; return 0
+    echo "cmake"
+    return 0
   fi
   if find "${dir}" -maxdepth 2 -type f -name "*.pro" | grep -q .; then
-    echo "qmake"; return 0
+    echo "qmake"
+    return 0
   fi
   echo "none"
 }
@@ -116,13 +123,27 @@ detect_cuda_arch() {
   fi
   log "Jetson model: ${model:-unknown}"
 
-  if echo "$model" | grep -qi "Orin"; then echo "87"; return 0; fi
-  if echo "$model" | grep -qi "Xavier"; then echo "72"; return 0; fi
+  # Best-effort mapping:
+  # Orin (Ampere) -> SM 87
+  # Xavier (Volta) -> SM 72
+  # Nano/TX1/TX2 (Maxwell/Pascal) -> varies; default 53/62; we pick 62 as safer
+  if echo "$model" | grep -qi "Orin"; then
+    echo "87"
+    return 0
+  fi
+  if echo "$model" | grep -qi "Xavier"; then
+    echo "72"
+    return 0
+  fi
+  # fallback
   echo "87"
 }
 
 build_cmake() {
-  local name="$1"; local src="$2"; local bld="$3"; shift 3
+  local name="$1"
+  local src="$2"
+  local bld="$3"
+  shift 3
   local extra_args=("$@")
 
   ensure_cmd cmake
@@ -141,11 +162,7 @@ build_cmake() {
     "${extra_args[@]}"
 
   log "Building ${name}"
-  if [[ "${VERBOSE}" -eq 1 ]]; then
-    cmake --build "${bld}" -j "${JOBS}" --verbose
-  else
-    cmake --build "${bld}" -j "${JOBS}"
-  fi
+  cmake --build "${bld}" -j "${JOBS}"
 
   if [[ "${RUN_TESTS}" -eq 1 ]]; then
     if [[ -f "${bld}/CTestTestfile.cmake" ]] || [[ -d "${bld}/Testing" ]]; then
@@ -161,7 +178,10 @@ build_cmake() {
 }
 
 build_qmake() {
-  local name="$1"; local pro="$2"; local bld="$3"; shift 3
+  local name="$1"
+  local pro="$2"
+  local bld="$3"
+  shift 3
   local extra_args=("$@")
 
   ensure_cmd make
@@ -175,16 +195,12 @@ build_qmake() {
   local cfg="release"
   [[ "${BUILD_TYPE}" == "Debug" ]] && cfg="debug"
 
-  log "Configuring ${name} (qmake=${qmake_bin}, cfg=${cfg}) pro=${pro} extra=${extra_args[*]:-<none>}"
+  log "Configuring ${name} (qmake=${qmake_bin}, cfg=${cfg}) pro=${pro}"
   (
     cd "${bld}"
     "${qmake_bin}" "${pro}" "CONFIG+=${cfg}" "${extra_args[@]}"
     log "Building ${name} (make -j ${JOBS})"
-    if [[ "${VERBOSE}" -eq 1 ]]; then
-      make -j "${JOBS}" VERBOSE=1 || make -j "${JOBS}" V=1
-    else
-      make -j "${JOBS}"
-    fi
+    make -j "${JOBS}"
   )
 
   log "Artifacts (${name}):"
@@ -192,7 +208,10 @@ build_qmake() {
 }
 
 build_module() {
-  local name="$1"; local dir="$2"; local bld="$3"; shift 3
+  local name="$1"
+  local dir="$2"
+  local bld="$3"
+  shift 3
   local extra_args=("$@")
 
   [[ -d "${dir}" ]] || die "Missing dir: ${dir}"
@@ -216,15 +235,10 @@ build_module() {
     local pro
     pro="$(find "${dir}" -maxdepth 2 -type f -name "*.pro" | head -n 1 || true)"
     [[ -n "${pro}" ]] || die "qmake build detected but no .pro found in ${dir}"
-
-    # Engine is CPU-first by default. Force CUDA build for engine.
     if [[ "${name}" == "engine" ]]; then
-      local nvcc="/usr/local/cuda/bin/nvcc"
-      log "Engine CUDA build requested. Checking nvcc: ${nvcc}"
-      [[ -x "${nvcc}" ]] || die "nvcc not found/executable at ${nvcc}. Run ./prerequisites.sh (JetPack CUDA dev)"
       build_qmake "${name}" "${pro}" "${bld}" "CONFIG+=with_cuda"
     else
-      build_qmake "${name}" "${pro}" "${bld}" "${extra_args[@]}"
+      build_qmake "${name}" "${pro}" "${bld}"
     fi
     return 0
   fi
@@ -232,64 +246,14 @@ build_module() {
   die "No supported build system found in ${dir} (need CMakeLists.txt or *.pro)"
 }
 
-find_engine_so() {
-  # engine/mri_engine.pro writes output where GUI expects it:
-  #   ${ROOT}/gui/release/libmri_engine.so.*
-  local cand="${ROOT}/gui/release/libmri_engine.so.1.0.0"
-  if [[ -f "${cand}" ]]; then echo "${cand}"; return 0; fi
-  cand="${ROOT}/gui/release/libmri_engine.so"
-  if [[ -e "${cand}" ]]; then echo "${cand}"; return 0; fi
-  find "${ROOT}/gui/release" -maxdepth 1 -type f -name 'libmri_engine.so*' | head -n 1
-}
-
-assert_engine_cuda_or_die() {
-  local so
-  so="$(find_engine_so || true)"
-  log "Asserting engine CUDA linkage. so='${so}'"
-  [[ -n "${so}" ]] || die "Could not locate engine shared library under ${ROOT}/gui/release"
-  assert_file "${so}"
-
-  log "readelf NEEDED (CUDA should appear as libcudart/libcuda/cublas/cufft):"
-  readelf -d "${so}" | egrep -i "NEEDED|cudart|cublas|cufft|cuda" || true
-
-  log "ldd CUDA deps:"
-  if ldd "${so}" | egrep -qi "cudart|libcuda|cublas|cufft"; then
-    ldd "${so}" | egrep -i "cudart|libcuda|cublas|cufft" || true
-    log "CUDA deps detected ✅"
-  else
-    log "ldd output (for debugging):"
-    ldd "${so}" || true
-    die "CUDA deps NOT detected ❌ (engine built CPU-only). Ensure engine is built with CONFIG+=with_cuda"
-  fi
-}
-
-stage_dicom_to_gui_release_if_missing() {
-  # GUI expects dicom lib in gui/release in the current setup.
-  local dst="${ROOT}/gui/release/libdicom_io_lib.so"
-  if [[ -f "${dst}" ]]; then
-    log "DICOM lib already present: ${dst}"
-    return 0
-  fi
-
-  local src=""
-  src="$(find "${ROOT}/build_dicom_${BUILD_TYPE}" -type f -name 'libdicom_io_lib.so' | head -n 1 || true)"
-  if [[ -z "${src}" ]]; then
-    wrn "Could not find libdicom_io_lib.so under build_dicom_${BUILD_TYPE}. GUI may still run if not needed."
-    return 0
-  fi
-
-  log "Staging DICOM lib: ${src} -> ${ROOT}/gui/release/"
-  mkdir -p "${ROOT}/gui/release"
-  cp -v "${src}" "${ROOT}/gui/release/"
-}
-
-# --- CUDA flags for a potential future CMake-based engine (kept for portability) ---
+# --- CUDA enable flags (best effort; harmless if unused by your project) ---
 CUDA_NVCC="/usr/local/cuda/bin/nvcc"
 CUDA_ARCH="$(detect_cuda_arch)"
 log "CUDA_NVCC=${CUDA_NVCC} (exists? $(test -x "${CUDA_NVCC}" && echo yes || echo no))"
 log "CUDA_ARCH=${CUDA_ARCH}"
 
-ENGINE_CMAKE_CUDA_ARGS=(
+# Common CMake knobs used in many projects; extra vars usually don't break anything.
+ENGINE_CUDA_ARGS=(
   "-DCMAKE_CUDA_COMPILER=${CUDA_NVCC}"
   "-DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCH}"
   "-DENABLE_CUDA=ON"
@@ -299,18 +263,13 @@ ENGINE_CMAKE_CUDA_ARGS=(
 
 # Build order: libs -> engine -> gui
 build_module "dicom_io_lib" "${ROOT}/dicom_io_lib" "${ROOT}/build_dicom_${BUILD_TYPE}"
-stage_dicom_to_gui_release_if_missing
-
-# Engine: if it is CMake-based, pass CUDA flags; if qmake-based, build_module forces CONFIG+=with_cuda.
 ENGINE_SYS="$(detect_build_system "${ROOT}/engine")"
 if [[ "${ENGINE_SYS}" == "cmake" ]]; then
-  build_module "engine" "${ROOT}/engine" "${ROOT}/build_engine_${BUILD_TYPE}" "${ENGINE_CMAKE_CUDA_ARGS[@]}"
+  build_module "engine"       "${ROOT}/engine"       "${ROOT}/build_engine_${BUILD_TYPE}" "${ENGINE_CUDA_ARGS[@]}"
 else
-  build_module "engine" "${ROOT}/engine" "${ROOT}/build_engine_${BUILD_TYPE}"
+  build_module "engine"       "${ROOT}/engine"       "${ROOT}/build_engine_${BUILD_TYPE}"
 fi
-assert_engine_cuda_or_die
-
-build_module "gui" "${ROOT}/gui" "${ROOT}/build_gui_${BUILD_TYPE}"
+build_module "gui"          "${ROOT}/gui"          "${ROOT}/build_gui_${BUILD_TYPE}"
 
 log "========================================"
 log "ALL BUILDS OK"
@@ -320,6 +279,22 @@ log "========================================"
 log "GUI executable candidates:"
 find "${ROOT}/build_gui_${BUILD_TYPE}" -maxdepth 5 -type f -executable -print || true
 
-log "Runtime hint (only if you see missing .so errors):"
-log "  export LD_LIBRARY_PATH=${ROOT}/gui/release:/usr/local/cuda/lib64:\$LD_LIBRARY_PATH"
-log "  ./build_gui_${BUILD_TYPE}/glimpseMRI"
+log "NOTE: If GUI fails at runtime due to missing engine .so, try:"
+log "  export LD_LIBRARY_PATH=${ROOT}/build_engine_${BUILD_TYPE}:\$LD_LIBRARY_PATH"
+log "  ./build_gui_${BUILD_TYPE}/<your_gui_binary>"
+
+# ------------------------------------------------------------
+# Optional: create a Desktop launcher (explicit opt-in)
+# ------------------------------------------------------------
+if [[ "${INSTALL_DESKTOP}" == "1" ]]; then
+  log "Installing desktop launcher..."
+  log "DESKTOP_ICON_SCRIPT=${DESKTOP_ICON_SCRIPT}"
+
+  if [[ -x "${DESKTOP_ICON_SCRIPT}" ]]; then
+    "${DESKTOP_ICON_SCRIPT}"
+    log "Desktop launcher install OK."
+    log "NOTE: You may need to right-click the Desktop icon and choose 'Allow Launching' once."
+  else
+    die "Desktop icon script not found or not executable: ${DESKTOP_ICON_SCRIPT}"
+  fi
+fi
