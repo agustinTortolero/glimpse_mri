@@ -124,22 +124,4 @@ You can create a desktop/app-menu launcher after a successful build:
 
 ---
 
-### Windows (Visual Studio + Qt Creator)
-
-Windows is the primary development target.
-
-High-level requirements:
-
-- Microsoft Visual Studio 2022  
-- Qt 6 (matching your MSVC toolchain)  
-- CUDA Toolkit (for GPU acceleration)  
-- Third-party libs such as FFTW, HDF5, ISMRMRD, OpenCV, pugixml (depending on your build configuration)
-
-Clone the repository:
-
-```bash
-git clone https://github.com/agustinTortolero/glimpse_mri.git
-cd glimpse_mri
-```
-
 
