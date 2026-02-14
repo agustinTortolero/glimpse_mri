@@ -387,7 +387,7 @@ unix:!win32 {
     # ---- RPATH so the app finds local engine/dicom .so at runtime ----
     # Also include CUDA default location on Jetson.
     CUDA_PATH = /usr/local/cuda
-    QMAKE_RPATHDIR += $$OUT_PWD/release $$PWD/release $$CUDA_PATH/lib64
+	QMAKE_RPATHDIR += $$OUT_PWD $$PWD/release $$CUDA_PATH/lib64
     QMAKE_LFLAGS   += -Wl,-rpath,$$OUT_PWD/release -Wl,-rpath,$$PWD/release -Wl,-rpath,$$CUDA_PATH/lib64
 
     message([lin][rpath] OUT=$$OUT_PWD/release  PWD=$$PWD/release  CUDA=$$CUDA_PATH/lib64)
@@ -399,3 +399,9 @@ unix:!win32 {
 }
 
 DISTFILES +=
+
+
+
+
+
+

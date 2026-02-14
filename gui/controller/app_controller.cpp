@@ -27,7 +27,7 @@
 #include <QDir>
 #include <QStatusBar>  // <-- needed to call showMessage()
 
-static constexpr int kEngineDeviceId = -1; // <-- set -1 for CPU-only, 0 for GPU0
+static constexpr int kEngineDeviceId = 0; // <-- set -1 for CPU-only, 0 for GPU0
 
 
 static inline int digits_for_padding_int(int S) {
