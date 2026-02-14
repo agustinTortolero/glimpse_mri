@@ -61,15 +61,14 @@ Attribution:
 
 
 ## Results
-
-Results (same dataset)
-System	GPU total recon time (ms)	CPU total recon time (ms)
-Laptop GPU	14020	1744
-Jetson Orin Nano	78513	89817
+| System | GPU total recon time (ms) | CPU total recon time (ms) |
+|---|---:|---:|
+| Laptop GPU | 14020 | 1744 |
+| Jetson Orin Nano | 78513 | 89817 |
 
 
 > Notes:
-> - GPU timings
+> - 
 
 
 
