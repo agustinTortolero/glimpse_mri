@@ -2,7 +2,7 @@
 ; Build with: Inno Setup 6.x (ISCC.exe or IDE)
 
 #define MyAppName       "Glimpse MRI"
-#define MyAppVersion    "1.0.0.0"
+#define MyAppVersion    "1.1.0.0"
 #define MyAppPublisher  "Agustin Tortolero"
 #define MyAppExeName    "glimpseMRI.exe"
 

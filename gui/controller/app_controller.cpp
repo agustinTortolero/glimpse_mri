@@ -27,6 +27,7 @@
 #include <QDir>
 #include <QStatusBar>  // <-- needed to call showMessage()
 
+static constexpr int kEngineDeviceId = -1; // <-- set -1 for CPU-only, 0 for GPU0
 
 
 static inline int digits_for_padding_int(int S) {
@@ -355,8 +356,8 @@ bool AppController::initEngine()
         }
 
         // --- 2) Initialize the engine ---
-        init_ok = engine_init(0);
-        qDebug() << "[LIB] engine_init(0) ->" << init_ok;
+        init_ok = engine_init(kEngineDeviceId);
+        qDebug() << "[LIB][Init] engine_init(" << kEngineDeviceId << ") ->" << init_ok;
 
         // --- 3) Query hardware / backend info from engine ---
         engine_init_info_t info{};
