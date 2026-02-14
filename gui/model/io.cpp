@@ -972,7 +972,7 @@ bool read_dicom_frames_gray8(const std::string& pathOrDir,
 }
 
 
-bool io::read_dicom_frames_u16(const std::string& path,
+bool read_dicom_frames_u16(const std::string& path,
                                std::vector<cv::Mat>& out16,
                                std::string* why)
 {

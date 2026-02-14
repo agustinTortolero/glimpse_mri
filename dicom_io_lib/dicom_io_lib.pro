@@ -133,8 +133,17 @@ unix {
     } else {
         # System packages (recommended):
         #   sudo apt-get install libdcmtk-dev pkg-config
-        CONFIG    += link_pkgconfig
-        PKGCONFIG += dcmtk
+        DCMTK_PC_OK = $$system(pkg-config --exists dcmtk && echo 1)
+equals(DCMTK_PC_OK, 1) {
+    CONFIG += link_pkgconfig
+    PKGCONFIG += dcmtk
+    message([DBG][DLL] Using pkg-config: dcmtk)
+} else {
+    message([WRN][DLL] dcmtk.pc not found. Falling back to manual include+libs.)
+    INCLUDEPATH += /usr/include/dcmtk
+    LIBS += -ldcmimgle -ldcmimage -ldcmdata -lofstd -loflog $$dcmtk_codec_libs() -lpthread -lz
+}
+
         message([DBG][DLL] Platform = Linux (pkg-config: dcmtk))
         # If your distro’s dcmtk.pc doesn’t pull pthread/zlib, uncomment:
         # LIBS += -lpthread -lz

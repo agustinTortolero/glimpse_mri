@@ -327,9 +327,29 @@ unix:!win32 {
 
     # ---- Prefer pkg-config wherever possible ----
     CONFIG += link_pkgconfig
-    PKGCONFIG += opencv4 ismrmrd pugixml
+    PKGCONFIG += opencv4 pugixml
+
+    # Jetson: headers are here (even if pkg-config points to /usr/local)
+    INCLUDEPATH += /usr/include/opencv4
+
+
+    ISMRMRD_PC_OK = $$system(pkg-config --exists ismrmrd && echo 1)
+    equals(ISMRMRD_PC_OK, 1) {
+        PKGCONFIG += ismrmrd
+        message([lin][pkg] ismrmrd via pkg-config)
+    } else {
+        message([lin][pkg] ismrmrd.pc not found; linking manually)
+        INCLUDEPATH += /usr/include/ismrmrd
+        LIBS += -L/usr/lib/aarch64-linux-gnu -lismrmrd
+    }
     # HDF5 packages commonly present on Ubuntu/Jetson
-    PKGCONFIG += hdf5 hdf5_hl hdf5_cpp hdf5_hl_cpp
+    # HDF5 (Jetson/Ubuntu): only hdf5.pc is guaranteed. HL/C++ pc files often missing.
+    PKGCONFIG += hdf5
+    HDF5_INCDIR = /usr/include/hdf5/serial
+    HDF5_LIBDIR = /usr/lib/aarch64-linux-gnu/hdf5/serial
+    INCLUDEPATH += $$HDF5_INCDIR
+    LIBS += -L$$HDF5_LIBDIR -lhdf5_hl -lhdf5_cpp -lhdf5_hl_cpp
+    message([lin][pkg] HDF5 hl/cpp manual: inc=$$HDF5_INCDIR lib=$$HDF5_LIBDIR)
 
     message([lin][pkg] using pkg-config: $$PKGCONFIG)
 

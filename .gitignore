@@ -105,3 +105,22 @@ Thumbs.db
 # local helper scripts
 git_push_glimpse_updates.ps1
 
+
+# --- Jetson / Qt build artifacts ---
+**/.qmake.stash
+**/Makefile
+**/*.o
+**/obj/
+**/moc/
+**/rcc/
+**/*.pro.user
+**/*.bak*
+**/*~
+**/core
+**/core.*
+
+# Outputs / binaries
+dicom_io_lib/*.so*
+engine/*.so*
+gui/glimpseMRI
+gui/release/
