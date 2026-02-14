@@ -17,19 +17,6 @@ The value is taken from the log line:
 
 ---
 
-## Results (same dataset)
-
-## Results (same dataset)
-
-| System | Total recon time (ms) |
-|---|---:|
-| Laptop GPU | 14020 |
-| Jetson Orin Nano | 78513 |
-
-
-> Notes:
-> - GPU timings
-
 ---
 
 ## Systems Used
@@ -54,6 +41,8 @@ Software stack used during the test:
 
 ---
 
+
+
 ## Dataset Used + Attribution
 
 File:
@@ -73,5 +62,19 @@ Attribution:
 > Dataset: MRIdata “Stanford Fullysampled 3D FSE Knees” (`52c2fd53-d233-4444-8bfd-7c454240d314.h5`), via mridata.org (uploader: mikgroup). License: CC BY-NC 4.0 (see MRIdata terms).
 
 ---
+
+
+## Results (same dataset)
+
+| System | Total recon time (ms) |
+|---|---:|
+| Laptop GPU | 14020 |
+| Jetson Orin Nano | 78513 |
+
+
+> Notes:
+> - GPU timings
+
+
 
 
