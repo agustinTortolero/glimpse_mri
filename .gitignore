@@ -124,3 +124,4 @@ dicom_io_lib/*.so*
 engine/*.so*
 gui/glimpseMRI
 gui/release/
+dist_jetson/
