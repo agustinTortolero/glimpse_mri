@@ -291,6 +291,67 @@ EOF
 chmod +x "${OUT_DIR}/create_desktop_shortcut.sh"
 
 
+
+# --------------------------
+# Bundle dependency installer (so the tarball can be used on a fresh Jetson)
+# --------------------------
+PREREQ_SRC="${ROOT}/prerequisites.sh"
+if [[ -f "${PREREQ_SRC}" ]]; then
+  log "Including prerequisites.sh as install_deps.sh"
+  cp -v "${PREREQ_SRC}" "${OUT_DIR}/install_deps.sh"
+  chmod +x "${OUT_DIR}/install_deps.sh"
+else
+  warn "prerequisites.sh not found at ${PREREQ_SRC} -> generating minimal install_deps.sh"
+  cat > "${OUT_DIR}/install_deps.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+TS() { date +"%Y-%m-%d %H:%M:%S"; }
+DBG(){ echo "[$(TS)][DBG] $*"; }
+WRN(){ echo "[$(TS)][WRN] $*" >&2; }
+ERR(){ echo "[$(TS)][ERR] $*" >&2; }
+
+if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+  ERR "Run with sudo: sudo $0"
+  exit 1
+fi
+
+try_install() {
+  local pkgs=("$@")
+  [[ ${#pkgs[@]} -gt 0 ]] || return 0
+  DBG "APT install: ${pkgs[*]}"
+  if ! apt-get install -y "${pkgs[@]}"; then
+    WRN "APT failed for: ${pkgs[*]} (continuing)"
+  fi
+}
+
+DBG "Updating apt indexes..."
+apt-get update
+
+# Minimal runtime deps for GlimpseMRI Jetson bundle (Ubuntu 22.04 / JetPack 6.x)
+try_install \
+  libhdf5-dev \
+  libdcmtk-dev \
+  libpugixml1v5 \
+  libfftw3-dev
+
+# Qt6 GUI runtime/dev (Qt 6.2 on Ubuntu 22.04)
+try_install \
+  qt6-base-dev \
+  qt6-multimedia-dev \
+  libqt6svg6-dev
+
+# OpenCV runtime/dev (binary links against libopencv_* libs)
+try_install libopencv-dev
+
+# Convenience: lets us patch RUNPATH in future or debug
+try_install patchelf
+
+DBG "DONE"
+EOF
+  chmod +x "${OUT_DIR}/install_deps.sh"
+fi
+
+
 # --------------------------
 # Bundle README
 # --------------------------
@@ -311,10 +372,10 @@ cat > "${OUT_DIR}/README_JETSON_BINARY.md" <<EOF
 ## Assumptions / Requirements (target Jetson)
 1. **JetPack is already installed** (CUDA + NVIDIA drivers + system integration).
 2. System runtime deps are installed (Qt6, HDF5, FFTW, DCMTK, etc.).
-   - Use the repo script:
+   - Use the bundled installer script:
      \`\`\`bash
-     chmod +x ./prerequisites.sh
-     ./prerequisites.sh
+     chmod +x ./install_deps.sh
+sudo ./install_deps.sh
      \`\`\`
 
 > Compatibility note: dynamic linking means you should target the **same JetPack major** (and ideally the same Ubuntu release)
