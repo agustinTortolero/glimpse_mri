@@ -1,81 +1,73 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# pack_jetson_bundle_auto_rpath.sh
-# Same as pack_jetson_bundle.sh but automatically patches RUNPATH/RPATH when patchelf is installed.
+# GlimpseMRI Jetson (aarch64) bundle packer:
+# - Copies GUI binary into bundle/bin
+# - Bundles project .so (engine, dicom) if present
+# - Bundles repo-local deps discovered by ldd (e.g. gui/release/libmri_engine.so.1)
+# - Bundles pinned ISMRMRD SONAME (libismrmrd.so.1.4*) if required by engine
+# - Patches RUNPATH to prefer bundled libs ($ORIGIN/../lib)
+# - Writes diagnostics + creates tarball + sha256
 
-ts() { date +"%Y-%m-%d %H:%M:%S"; }
-log() { echo "[$(ts)][DBG] $*"; }
+# -------------------------
+# Logging (to stderr so command-substitutions stay clean)
+# -------------------------
+ts() { date "+%Y-%m-%d %H:%M:%S"; }
+log()  { echo "[$(ts)][DBG] $*" >&2; }
 warn() { echo "[$(ts)][WRN] $*" >&2; }
-die() { echo "[$(ts)][ERR] $*" >&2; exit 1; }
+die()  { echo "[$(ts)][ERR] $*" >&2; exit 1; }
 
+# -------------------------
+# Args
+# -------------------------
 BUILD_TYPE="Release"
 GUI_EXE=""
-OUT_ROOT=""
 KEEP_DIR=0
 
-# Default runpath: bundle libs first, keep CUDA on common Jetson path.
-RPATH_STR='$ORIGIN/../lib:/usr/local/cuda/lib64'
-
 usage() {
-  cat <<EOF
-Usage: $0 [--release|--debug] [--exe /path/to/gui_exe] [--out /path/to/dist_root] [--keep-dir] [--rpath "STR"]
-
-Options:
-  --release          Bundle Release build (default)
-  --debug            Bundle Debug build
-  --exe PATH         Explicit GUI executable path (otherwise auto-detect inside build_gui_<TYPE>/)
-  --out DIR          Output root directory (default: ./dist_jetson)
-  --keep-dir         Do NOT delete the output directory if it already exists
-  --rpath STR        Override patched RUNPATH/RPATH (default: $ORIGIN/../lib:/usr/local/cuda/lib64)
+  cat >&2 <<'EOF'
+Usage:
+  ./pack_jetson_bundle.sh [--release|--debug] [--exe /full/path/to/glimpseMRI] [--keep]
 
 Notes:
-  - If patchelf is NOT installed, we cannot patch RUNPATH; run.sh will still set LD_LIBRARY_PATH.
-  - Recommended:
-      sudo apt-get update && sudo apt-get install -y patchelf
+  - If --exe is not provided, the script will try to auto-detect an aarch64 ELF executable in build_gui_<Type>.
+  - Output: dist_jetson/glimpse_mri_aarch64_<Type>_<gitsha>_<timestamp>/{bin,lib,diag,run.sh,install_deps.sh}
+  - Also creates: dist_jetson/<bundle_name>.tar.gz and .tar.gz.sha256
 EOF
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --release) BUILD_TYPE="Release"; shift ;;
-    --debug)   BUILD_TYPE="Debug"; shift ;;
-    --exe)     GUI_EXE="${2:-}"; shift 2 ;;
-    --out)     OUT_ROOT="${2:-}"; shift 2 ;;
-    --keep-dir) KEEP_DIR=1; shift ;;
-    --rpath)   RPATH_STR="${2:-}"; shift 2 ;;
-    -h|--help) usage; exit 0 ;;
-    *) die "Unknown arg: $1 (use --help)" ;;
+    --release) BUILD_TYPE="Release"; shift;;
+    --debug)   BUILD_TYPE="Debug"; shift;;
+    --exe)     GUI_EXE="${2:-}"; shift 2;;
+    --keep)    KEEP_DIR=1; shift;;
+    -h|--help) usage; exit 0;;
+    *) die "Unknown arg: $1 (use --help)";;
   esac
 done
 
-command -v tar >/dev/null 2>&1 || die "tar not found"
-command -v sha256sum >/dev/null 2>&1 || die "sha256sum not found"
-command -v file >/dev/null 2>&1 || die "file not found (sudo apt-get install -y file)"
-command -v ldd >/dev/null 2>&1 || die "ldd not found"
-command -v awk >/dev/null 2>&1 || die "awk not found"
-
+# -------------------------
+# Paths + metadata
+# -------------------------
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-OUT_ROOT="${OUT_ROOT:-${ROOT}/dist_jetson}"
+DIST_DIR="$ROOT/dist_jetson"
 
-GUI_BLD="${ROOT}/build_gui_${BUILD_TYPE}"
-ENG_BLD="${ROOT}/build_engine_${BUILD_TYPE}"
-DICOM_BLD="${ROOT}/build_dicom_${BUILD_TYPE}"
+GUI_BLD="$ROOT/build_gui_${BUILD_TYPE}"
+ENG_BLD="$ROOT/build_engine_${BUILD_TYPE}"
+DICOM_BLD="$ROOT/build_dicom_${BUILD_TYPE}"
 
-[[ -d "$GUI_BLD" ]] || die "Missing GUI build dir: $GUI_BLD (run ./build_jetson.shh first)"
-[[ -d "$ENG_BLD" ]] || die "Missing engine build dir: $ENG_BLD"
-[[ -d "$DICOM_BLD" ]] || die "Missing dicom build dir: $DICOM_BLD"
-
-GIT_SHA="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo "nosha")"
-MODEL="$(tr -d '\0' </proc/device-tree/model 2>/dev/null || echo "unknown-jetson")"
 ARCH="$(uname -m)"
-STAMP="$(date +"%Y%m%d_%H%M%S")"
+MODEL="$(tr -d '\0' </proc/device-tree/model 2>/dev/null || echo "unknown")"
+GIT_SHA="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo "nogit")"
+STAMP="$(date +%Y%m%d_%H%M%S)"
 
-OUT_NAME="glimpse_mri_${ARCH}_${BUILD_TYPE}_${GIT_SHA}_${STAMP}"
-OUT_DIR="${OUT_ROOT}/${OUT_NAME}"
-BIN_DIR="${OUT_DIR}/bin"
-LIB_DIR="${OUT_DIR}/lib"
-DIAG_DIR="${OUT_DIR}/diag"
+[[ "$ARCH" == "aarch64" ]] || warn "ARCH=$ARCH (expected aarch64 on Jetson)"
+
+OUT_DIR="$DIST_DIR/glimpse_mri_${ARCH}_${BUILD_TYPE}_${GIT_SHA}_${STAMP}"
+BIN_DIR="$OUT_DIR/bin"
+LIB_DIR="$OUT_DIR/lib"
+DIAG_DIR="$OUT_DIR/diag"
 
 log "ROOT=$ROOT"
 log "BUILD_TYPE=$BUILD_TYPE"
@@ -83,145 +75,187 @@ log "MODEL=$MODEL"
 log "ARCH=$ARCH"
 log "GIT_SHA=$GIT_SHA"
 log "OUT_DIR=$OUT_DIR"
-log "RPATH_STR=$RPATH_STR"
-
-if [[ -d "$OUT_DIR" && "$KEEP_DIR" -eq 0 ]]; then
-  log "Removing existing OUT_DIR: $OUT_DIR"
-  rm -rf "$OUT_DIR"
-fi
 
 mkdir -p "$BIN_DIR" "$LIB_DIR" "$DIAG_DIR"
 
-# Detect GUI executable
+if [[ -d "$OUT_DIR" && "$KEEP_DIR" -eq 0 ]]; then
+  rm -rf "$OUT_DIR"
+  mkdir -p "$BIN_DIR" "$LIB_DIR" "$DIAG_DIR"
+fi
+
+# -------------------------
+# GUI exe: explicit or auto-detect
+# -------------------------
 if [[ -n "$GUI_EXE" ]]; then
   [[ -f "$GUI_EXE" ]] || die "--exe not found: $GUI_EXE"
 else
+  [[ -d "$GUI_BLD" ]] || die "GUI build dir missing: $GUI_BLD (build first or pass --exe)"
   log "Auto-detecting GUI executable under: $GUI_BLD"
   while IFS= read -r f; do
+    # skip shared libs
+    [[ "$f" == *.so* ]] && continue
     info="$(file "$f" 2>/dev/null || true)"
-    if [[ "$info" == *"ELF 64-bit"* && "$info" == *"aarch64"* && "$info" == *"executable"* ]]; then
-      GUI_EXE="$f"
-      break
-    fi
-  done < <(find "$GUI_BLD" -maxdepth 8 -type f ! -name "*.so*" | sort)
+    # robust: order-independent checks
+    echo "$info" | grep -qi "ELF 64-bit" || continue
+    echo "$info" | grep -qi "executable" || continue
+    echo "$info" | grep -qiE "aarch64|ARM aarch64" || continue
+    GUI_EXE="$f"
+    break
+  done < <(find "$GUI_BLD" -maxdepth 8 -type f | sort)
 fi
+
 [[ -n "$GUI_EXE" ]] || die "Could not auto-detect GUI executable. Re-run with: --exe /full/path/to/gui_binary"
 
 log "GUI_EXE=$GUI_EXE"
 cp -v "$GUI_EXE" "$BIN_DIR/"
 GUI_BASENAME="$(basename "$GUI_EXE")"
 
-# Copy shared libs from build trees (if any)
+# -------------------------
+# Copy .so libs from build trees (if any)
+# -------------------------
 copy_libs_from_dir() {
   local src="$1"
   local label="$2"
-  log "Copying ${label} .so* from: $src"
+  [[ -d "$src" ]] || { warn "Missing $label dir: $src"; return 0; }
+  log "Copying ${label} *.so* from: $src"
   find "$src" -maxdepth 10 \( -type f -o -type l \) -name "*.so*" -print0 2>/dev/null \
     | sort -z \
     | while IFS= read -r -d '' f; do
-        cp -vL "$f" "$LIB_DIR/"
+        cp -vL "$f" "$LIB_DIR/" || true
       done
 }
+
 copy_libs_from_dir "$ENG_BLD" "engine" || true
 copy_libs_from_dir "$DICOM_BLD" "dicom" || true
 
-# Copy repo-local deps discovered by ldd (this catches gui/release/libmri_engine.so.1)
+# -------------------------
+# Copy repo-local deps discovered by ldd (captures gui/release/libmri_engine.so.1)
+# -------------------------
 log "Scanning ldd for repo-local dependencies (paths under: $ROOT)"
-ldd_out="$(ldd "$BIN_DIR/$GUI_BASENAME" 2>/dev/null || true)"
-echo "$ldd_out" | awk '
-  $2 == "=>" && $3 ~ /^\// {print $3}
-  $1 ~ /^\// {print $1}
-' | sort -u | while IFS= read -r p; do
+ldd "$BIN_DIR/$GUI_BASENAME" > "$DIAG_DIR/ldd_${GUI_BASENAME}.txt" || true
+
+REPO_LOCAL_COUNT=0
+while read -r line; do
+  # typical ldd line:
+  #   libfoo.so.1 => /path/to/libfoo.so.1 (0x...)
+  p="$(echo "$line" | awk '{print $3}' | tr -d '()' || true)"
   [[ -z "$p" ]] && continue
   if [[ "$p" == "$ROOT/"* ]]; then
     log "  Bundling repo-local dep: $p"
-    cp -vL "$p" "$LIB_DIR/"
+    cp -vL "$p" "$LIB_DIR/" || true
+    REPO_LOCAL_COUNT=$((REPO_LOCAL_COUNT+1))
   fi
-done
+done < <(cat "$DIAG_DIR/ldd_${GUI_BASENAME}.txt" | grep "=> " || true)
 
-# Patch RUNPATH/RPATH automatically (if patchelf exists)
-if command -v patchelf >/dev/null 2>&1; then
-  log "patchelf found -> patching GUI RUNPATH/RPATH to: $RPATH_STR"
-  patchelf --set-rpath "$RPATH_STR" "$BIN_DIR/$GUI_BASENAME" || warn "patchelf failed for GUI"
+log "Repo-local deps copied from ldd: $REPO_LOCAL_COUNT"
 
-  log "Setting RPATH on bundled libs to \$ORIGIN (best-effort)"
-  for so in "$LIB_DIR"/*.so*; do
-    [[ -f "$so" ]] || continue
-    patchelf --set-rpath '$ORIGIN' "$so" || true
-  done
+# -------------------------
+# Bundle pinned ISMRMRD SONAME if engine needs it (libismrmrd.so.1.4*)
+# -------------------------
+ENGINE_IN_BUNDLE="$LIB_DIR/libmri_engine.so.1"
+if [[ -f "$ENGINE_IN_BUNDLE" ]]; then
+  if readelf -d "$ENGINE_IN_BUNDLE" 2>/dev/null | grep -q "libismrmrd.so.1.4"; then
+    log "Engine depends on libismrmrd.so.1.4 -> bundling ISMRMRD 1.4 into tarball"
+    ISM_PATH="$(ldd "$ENGINE_IN_BUNDLE" | awk '/libismrmrd\.so\.1\.4/ {print $3; exit}' || true)"
+    if [[ -n "${ISM_PATH:-}" && -e "$ISM_PATH" ]]; then
+      log "Resolved from ldd: libismrmrd.so.1.4 -> $ISM_PATH"
+      ISM_DIR="$(dirname "$ISM_PATH")"
+      log "Bundling system dep family: $ISM_DIR/libismrmrd.so.1.4* -> $LIB_DIR"
+      cp -av "$ISM_DIR"/libismrmrd.so.1.4* "$LIB_DIR/" || true
+    else
+      warn "ldd could not resolve libismrmrd.so.1.4. Trying ldconfig..."
+      ISM_PATH2="$(ldconfig -p 2>/dev/null | awk '/libismrmrd\.so\.1\.4/ {print $NF; exit}' || true)"
+      if [[ -n "${ISM_PATH2:-}" && -e "$ISM_PATH2" ]]; then
+        log "Resolved from ldconfig: libismrmrd.so.1.4 -> $ISM_PATH2"
+        ISM_DIR2="$(dirname "$ISM_PATH2")"
+        log "Bundling system dep family: $ISM_DIR2/libismrmrd.so.1.4* -> $LIB_DIR"
+        cp -av "$ISM_DIR2"/libismrmrd.so.1.4* "$LIB_DIR/" || true
+      else
+        warn "Could not resolve libismrmrd.so.1.4 on this machine. Fresh-Jetson run may fail."
+      fi
+    fi
+
+    if ls -lah "$LIB_DIR"/libismrmrd.so.1.4* >/dev/null 2>&1; then
+      log "ISMRMRD bundled OK:"
+      ls -lah "$LIB_DIR"/libismrmrd.so.1.4*
+    else
+      warn "ISMRMRD still not present in bundle/lib after attempted copy."
+    fi
+  else
+    log "Engine does not list libismrmrd.so.1.4 in NEEDED (skipping ISMRMRD bundling)"
+  fi
 else
-  warn "patchelf NOT found -> cannot patch RUNPATH/RPATH. run.sh will rely on LD_LIBRARY_PATH."
+  warn "Engine not found in bundle at: $ENGINE_IN_BUNDLE (cannot bundle ISMRMRD)"
 fi
 
+# -------------------------
+# RUNPATH patching (prefer bundle libs)
+# -------------------------
+PATCH_RUNPATH='$ORIGIN/../lib:/usr/local/cuda/lib64'
+
+if command -v patchelf >/dev/null 2>&1; then
+  log "patchelf found -> patching RUNPATH to use bundled libs first"
+  patchelf --set-rpath "$PATCH_RUNPATH" "$BIN_DIR/$GUI_BASENAME" || true
+  # also patch all .so in bundle/lib
+  find "$LIB_DIR" -maxdepth 1 \( -type f -o -type l \) -name "*.so*" -print0 2>/dev/null \
+    | while IFS= read -r -d '' so; do
+        patchelf --set-rpath "$PATCH_RUNPATH" "$so" || true
+      done
+else
+  warn "patchelf NOT found -> run.sh will rely on LD_LIBRARY_PATH (recommended: sudo apt-get install -y patchelf)"
+fi
+
+# -------------------------
 # Diagnostics
+# -------------------------
 log "Writing dependency diagnostics (ldd) ..."
-ldd "$BIN_DIR/$GUI_BASENAME" | tee "${DIAG_DIR}/ldd_${GUI_BASENAME}.txt" >/dev/null || true
-(
-  cd "$OUT_DIR"
-  env -u LD_LIBRARY_PATH LD_LIBRARY_PATH="$LIB_DIR" ldd "$BIN_DIR/$GUI_BASENAME" \
-    | tee "${DIAG_DIR}/ldd_${GUI_BASENAME}_with_bundle_lib.txt" >/dev/null || true
-)
-if command -v readelf >/dev/null 2>&1; then
-  readelf -d "$BIN_DIR/$GUI_BASENAME" | egrep -i "rpath|runpath" \
-    | tee "${DIAG_DIR}/readelf_rpath_runpath.txt" >/dev/null || true
+ldd "$BIN_DIR/$GUI_BASENAME" > "$DIAG_DIR/ldd_${GUI_BASENAME}.txt" || true
+LD_LIBRARY_PATH="$LIB_DIR" ldd "$BIN_DIR/$GUI_BASENAME" > "$DIAG_DIR/ldd_${GUI_BASENAME}_with_bundle_lib.txt" || true
+if [[ -f "$ENGINE_IN_BUNDLE" ]]; then
+  ldd "$ENGINE_IN_BUNDLE" > "$DIAG_DIR/ldd_libmri_engine.txt" || true
+  LD_LIBRARY_PATH="$LIB_DIR" ldd "$ENGINE_IN_BUNDLE" > "$DIAG_DIR/ldd_libmri_engine_with_bundle_lib.txt" || true
 fi
 
-# run wrapper
-cat > "${OUT_DIR}/run.sh" <<EOF
+# -------------------------
+# Include prerequisites.sh as install_deps.sh (if present)
+# -------------------------
+if [[ -f "$ROOT/prerequisites.sh" ]]; then
+  log "Including prerequisites.sh as install_deps.sh"
+  cp -v "$ROOT/prerequisites.sh" "$OUT_DIR/install_deps.sh"
+else
+  warn "No prerequisites.sh found at repo root; install_deps.sh will not be included."
+fi
+
+# -------------------------
+# run.sh
+# -------------------------
+cat > "$OUT_DIR/run.sh" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-ts() { date +"%Y-%m-%d %H:%M:%S"; }
-log() { echo "[\$(ts)][DBG] \$*"; }
-
 HERE="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
-BIN="\${HERE}/bin"
-LIB="\${HERE}/lib"
-
-log "HERE=\$HERE"
-log "BIN=\$BIN"
-log "LIB=\$LIB"
-log "ARCH=\$(uname -m)"
-
-export LD_LIBRARY_PATH="\${LIB}:\${LD_LIBRARY_PATH:-}"
-log "LD_LIBRARY_PATH=\$LD_LIBRARY_PATH"
-
-exec "\${BIN}/${GUI_BASENAME}" "\$@"
+BIN="\$HERE/bin"
+LIB="\$HERE/lib"
+export LD_LIBRARY_PATH="\$LIB:\${LD_LIBRARY_PATH:-}"
+echo "[DBG] HERE=\$HERE"
+echo "[DBG] BIN=\$BIN"
+echo "[DBG] LIB=\$LIB"
+echo "[DBG] ARCH=\$(uname -m)"
+echo "[DBG] LD_LIBRARY_PATH=\$LD_LIBRARY_PATH"
+exec "\$BIN/$GUI_BASENAME" "\$@"
 EOF
-chmod +x "${OUT_DIR}/run.sh"
+chmod +x "$OUT_DIR/run.sh"
 
-# include prerequisites.sh if present
-if [[ -f "${ROOT}/prerequisites.sh" ]]; then
-  cp -v "${ROOT}/prerequisites.sh" "${OUT_DIR}/install_deps.sh"
-  chmod +x "${OUT_DIR}/install_deps.sh" || true
-fi
-
-# README
-cat > "${OUT_DIR}/README_JETSON_BINARY.md" <<EOF
-# GlimpseMRI Jetson Binary Bundle
-
-**Build:** ${BUILD_TYPE}  
-**Git:** ${GIT_SHA}  
-**Arch:** ${ARCH}  
-
-## Runpath patch
-If \`patchelf\` was available on the build machine, the GUI binary was patched to:
-\`\`\`
-${RPATH_STR}
-\`\`\`
-
-## Run
-\`\`\`bash
-chmod +x ./run.sh
-./run.sh
-\`\`\`
-EOF
-
-# tarball + sha
-TARBALL="${OUT_ROOT}/${OUT_NAME}.tar.gz"
+# -------------------------
+# Tarball + sha256
+# -------------------------
+TARBALL="${OUT_DIR}.tar.gz"
 log "Creating tarball: $TARBALL"
-tar -C "$OUT_ROOT" -czf "$TARBALL" "$OUT_NAME"
-( cd "$OUT_ROOT" && sha256sum "$(basename "$TARBALL")" | tee "$(basename "$TARBALL").sha256" )
+tar -C "$DIST_DIR" -czf "$TARBALL" "$(basename "$OUT_DIR")"
+
+log "Writing SHA256"
+( cd "$DIST_DIR" && sha256sum "$(basename "$TARBALL")" | tee "$(basename "$TARBALL").sha256" )
 
 log "DONE"
 log "Bundle dir : $OUT_DIR"
 log "Tarball    : $TARBALL"
+log "SHA256     : ${TARBALL}.sha256"
