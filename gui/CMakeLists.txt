@@ -18,6 +18,7 @@ find_package(OpenCV REQUIRED)
 find_package(HDF5 REQUIRED COMPONENTS C CXX HL)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(PUGIXML REQUIRED IMPORTED_TARGET pugixml)
+pkg_check_modules(DCMTK QUIET IMPORTED_TARGET dcmtk)
 
 message(STATUS "[gui] Qt6 version      = ${Qt6_VERSION}")
 message(STATUS "[gui] OpenCV version   = ${OpenCV_VERSION}")
@@ -178,6 +179,28 @@ if(NOT GLIMPSE_DICOM_LIB)
 endif()
 
 # ------------------------------------------------------------
+# DCMTK for GUI/model/io.cpp
+# Prefer pkg-config, fall back to explicit Ubuntu-style libs
+# ------------------------------------------------------------
+if(TARGET PkgConfig::DCMTK)
+    message(STATUS "[gui][dcmtk] Using pkg-config: dcmtk")
+    set(GLIMPSE_GUI_DCMTK_LIBS PkgConfig::DCMTK)
+else()
+    message(WARNING "[gui][dcmtk] dcmtk.pc not found. Falling back to manual libs.")
+    target_include_directories(glimpseMRI PRIVATE /usr/include/dcmtk)
+    set(GLIMPSE_GUI_DCMTK_LIBS
+        dcmimgle
+        dcmimage
+        dcmdata
+        oflog
+        ofstd
+        dcmjpeg
+        dcmjpls
+        pthread
+        z
+    )
+endif()
+# ------------------------------------------------------------
 # Link
 # ------------------------------------------------------------
 target_link_libraries(glimpseMRI PRIVATE
@@ -187,6 +210,7 @@ target_link_libraries(glimpseMRI PRIVATE
     ${OpenCV_LIBS}
     HDF5::HDF5
     PkgConfig::PUGIXML
+    ${GLIMPSE_GUI_DCMTK_LIBS}
     ${GLIMPSE_ENGINE_LIB}
     ${GLIMPSE_DICOM_LIB}
 )
