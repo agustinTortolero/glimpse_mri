@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(glimpseMRI LANGUAGES CXX)
+project(glimpseMRI LANGUAGES C CXX)
 
 message(STATUS "[gui] Configuring glimpseMRI with CMake")
 
@@ -183,7 +183,7 @@ target_link_libraries(glimpseMRI PRIVATE
     Qt6::Gui
     Qt6::Widgets
     ${OpenCV_LIBS}
-    ${HDF5_LIBRARIES}
+    HDF5::HDF5
     ${GLIMPSE_ENGINE_LIB}
     ${GLIMPSE_DICOM_LIB}
 )
