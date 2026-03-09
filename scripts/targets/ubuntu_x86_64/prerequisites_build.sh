@@ -45,7 +45,8 @@ apt-get install -y \
   libdcmtk-dev \
   libpugixml-dev \
   libfftw3-dev \
-  libopencv-dev
+  libopencv-dev \
+  libismrmrd-dev
 
 DBG "Installing Qt6 development packages for CMake..."
 apt-get install -y \

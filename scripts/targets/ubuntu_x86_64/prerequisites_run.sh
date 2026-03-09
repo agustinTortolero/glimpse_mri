@@ -32,6 +32,7 @@ try_install \
   libpugixml1v5 \
   libfftw3-dev \
   libopencv-dev \
+  libismrmrd1.4 \\
   qt6-base-dev \
   qt6-multimedia-dev \
   libqt6svg6-dev \
