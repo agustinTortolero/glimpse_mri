@@ -15,6 +15,7 @@ set(CMAKE_AUTORCC ON)
 # ------------------------------------------------------------
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets)
 find_package(OpenCV REQUIRED)
+find_package(HDF5 REQUIRED COMPONENTS C CXX HL)
 
 message(STATUS "[gui] Qt6 version      = ${Qt6_VERSION}")
 message(STATUS "[gui] OpenCV version   = ${OpenCV_VERSION}")
@@ -101,6 +102,7 @@ target_include_directories(glimpseMRI PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/view
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${OpenCV_INCLUDE_DIRS}
+    ${HDF5_INCLUDE_DIRS}
 )
 
 # ------------------------------------------------------------
@@ -181,6 +183,7 @@ target_link_libraries(glimpseMRI PRIVATE
     Qt6::Gui
     Qt6::Widgets
     ${OpenCV_LIBS}
+    ${HDF5_LIBRARIES}
     ${GLIMPSE_ENGINE_LIB}
     ${GLIMPSE_DICOM_LIB}
 )
