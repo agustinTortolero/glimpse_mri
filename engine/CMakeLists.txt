@@ -24,6 +24,45 @@ message(STATUS "[eng] GLIMPSE_CUDA_MODE=${GLIMPSE_CUDA_MODE}")
 message(STATUS "[eng] CMAKE_SYSTEM_PROCESSOR=${CMAKE_SYSTEM_PROCESSOR}")
 message(STATUS "[eng] CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}")
 
+# Compatibility with older script flags:
+#   -DENABLE_CUDA=ON/OFF
+#   -DUSE_CUDA=ON/OFF
+#   -DGLIMPSE_ENABLE_CUDA=ON/OFF
+# If GLIMPSE_CUDA_MODE is still AUTO, map those legacy flags into AUTO/ON/OFF behavior.
+set(_LEGACY_CUDA_REQUESTED OFF)
+set(_LEGACY_CUDA_DEFINED OFF)
+
+if(DEFINED ENABLE_CUDA)
+    set(_LEGACY_CUDA_DEFINED ON)
+    if(ENABLE_CUDA)
+        set(_LEGACY_CUDA_REQUESTED ON)
+    endif()
+endif()
+
+if(DEFINED USE_CUDA)
+    set(_LEGACY_CUDA_DEFINED ON)
+    if(USE_CUDA)
+        set(_LEGACY_CUDA_REQUESTED ON)
+    endif()
+endif()
+
+if(DEFINED GLIMPSE_ENABLE_CUDA)
+    set(_LEGACY_CUDA_DEFINED ON)
+    if(GLIMPSE_ENABLE_CUDA)
+        set(_LEGACY_CUDA_REQUESTED ON)
+    endif()
+endif()
+
+if(GLIMPSE_CUDA_MODE STREQUAL "AUTO" AND _LEGACY_CUDA_DEFINED)
+    if(_LEGACY_CUDA_REQUESTED)
+        set(GLIMPSE_CUDA_MODE "ON")
+        message(STATUS "[eng][cuda] legacy flags requested CUDA -> forcing GLIMPSE_CUDA_MODE=ON")
+    else()
+        set(GLIMPSE_CUDA_MODE "OFF")
+        message(STATUS "[eng][cuda] legacy flags disabled CUDA -> forcing GLIMPSE_CUDA_MODE=OFF")
+    endif()
+endif()
+
 # ---- recursive source collection (matches qmake files(..., true)) ----
 file(GLOB_RECURSE ENGINE_C_SOURCES
     CONFIGURE_DEPENDS
@@ -147,7 +186,7 @@ target_link_libraries(mri_engine PRIVATE
 )
 
 # ---- ISMRMRD: manual link ----
-set(ISMRMRD_INCDIR "/usr/include/ismrmrd" CACHE PATH "ISMRMRD include dir")
+set(ISMRMRD_INCDIR "/usr/include" CACHE PATH "ISMRMRD include dir (parent of the ismrmrd/ folder)")
 
 set(_ISMRMRD_LIBDIR_DEFAULT "")
 if(DEFINED CMAKE_LIBRARY_ARCHITECTURE AND EXISTS "/usr/lib/${CMAKE_LIBRARY_ARCHITECTURE}")
