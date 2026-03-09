@@ -16,6 +16,8 @@ set(CMAKE_AUTORCC ON)
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets)
 find_package(OpenCV REQUIRED)
 find_package(HDF5 REQUIRED COMPONENTS C CXX HL)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(PUGIXML REQUIRED IMPORTED_TARGET pugixml)
 
 message(STATUS "[gui] Qt6 version      = ${Qt6_VERSION}")
 message(STATUS "[gui] OpenCV version   = ${OpenCV_VERSION}")
@@ -184,6 +186,7 @@ target_link_libraries(glimpseMRI PRIVATE
     Qt6::Widgets
     ${OpenCV_LIBS}
     HDF5::HDF5
+    PkgConfig::PUGIXML
     ${GLIMPSE_ENGINE_LIB}
     ${GLIMPSE_DICOM_LIB}
 )
