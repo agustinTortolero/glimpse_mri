@@ -107,6 +107,7 @@ set_target_properties(mri_engine PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+    POSITION_INDEPENDENT_CODE ON
 )
 
 target_include_directories(mri_engine
@@ -231,15 +232,30 @@ set(_GLIMPSE_CUDA_ENABLED OFF)
 set(_GLIMPSE_CUDA_REASON "disabled by configuration")
 
 string(TOUPPER "${GLIMPSE_CUDA_MODE}" _GLIMPSE_CUDA_MODE_UPPER)
+string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" _GLIMPSE_SYSTEM_PROCESSOR_LOWER)
+set(_GLIMPSE_IS_AARCH64 OFF)
+if(_GLIMPSE_SYSTEM_PROCESSOR_LOWER MATCHES "^(aarch64|arm64)$")
+    set(_GLIMPSE_IS_AARCH64 ON)
+endif()
 
 if(NOT _GLIMPSE_CUDA_MODE_UPPER STREQUAL "OFF")
+    find_package(CUDAToolkit QUIET)
+    if(CUDAToolkit_FOUND)
+        message(STATUS "[eng][cuda] CUDAToolkit found: ${CUDAToolkit_VERSION} (${CUDAToolkit_LIBRARY_ROOT})")
+        if(NOT CMAKE_CUDA_COMPILER AND DEFINED CUDAToolkit_NVCC_EXECUTABLE AND EXISTS "${CUDAToolkit_NVCC_EXECUTABLE}")
+            set(CMAKE_CUDA_COMPILER "${CUDAToolkit_NVCC_EXECUTABLE}" CACHE FILEPATH "CUDA compiler")
+            message(STATUS "[eng][cuda] probing CUDA with nvcc from CUDAToolkit: ${CMAKE_CUDA_COMPILER}")
+        endif()
+    else()
+        message(STATUS "[eng][cuda] CUDAToolkit package not found during probe")
+    endif()
+
     include(CheckLanguage)
     check_language(CUDA)
 
     if(CMAKE_CUDA_COMPILER)
         message(STATUS "[eng][cuda] CUDA compiler detected: ${CMAKE_CUDA_COMPILER}")
         enable_language(CUDA)
-        find_package(CUDAToolkit QUIET)
 
         if(CUDAToolkit_FOUND)
             set(_GLIMPSE_CUDA_ENABLED ON)
@@ -261,9 +277,14 @@ if(_GLIMPSE_CUDA_ENABLED AND ENGINE_CUDA_COUNT GREATER 0)
 
     target_sources(mri_engine PRIVATE ${ENGINE_CUDA_SOURCES})
     target_compile_definitions(mri_engine PRIVATE ENGINE_HAS_CUDA=1)
+    set_target_properties(mri_engine PROPERTIES
+        CUDA_STANDARD 17
+        CUDA_STANDARD_REQUIRED ON
+        CUDA_SEPARABLE_COMPILATION ON
+    )
 
     if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES OR CMAKE_CUDA_ARCHITECTURES STREQUAL "")
-        if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+        if(_GLIMPSE_IS_AARCH64)
             set_property(TARGET mri_engine PROPERTY CUDA_ARCHITECTURES 87)
             message(STATUS "[eng][cuda] defaulting CUDA_ARCHITECTURES=87 for Jetson/aarch64")
         else()
@@ -277,7 +298,6 @@ if(_GLIMPSE_CUDA_ENABLED AND ENGINE_CUDA_COUNT GREATER 0)
 
     target_compile_options(mri_engine PRIVATE
         $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math>
-        $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-fPIC>
     )
 
     target_link_libraries(mri_engine PRIVATE
