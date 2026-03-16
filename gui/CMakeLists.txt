@@ -111,6 +111,8 @@ target_include_directories(glimpseMRI PRIVATE
 # ------------------------------------------------------------
 # Linux-side feature defines carried from qmake logic
 # ------------------------------------------------------------
+string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" _GLIMPSE_SYSTEM_PROCESSOR_LOWER)
+
 if(UNIX AND NOT WIN32)
     target_compile_definitions(glimpseMRI PRIVATE
         HAVE_ISMRMRD
@@ -119,7 +121,7 @@ if(UNIX AND NOT WIN32)
         IO_ENABLE_DCMJ2K=0
     )
 
-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+    if(_GLIMPSE_SYSTEM_PROCESSOR_LOWER MATCHES "^(aarch64|arm64)$")
         target_compile_definitions(glimpseMRI PRIVATE GLIMPSE_JETSON)
         message(STATUS "[gui] Defining GLIMPSE_JETSON for aarch64/arm64 build")
     endif()
@@ -142,28 +144,70 @@ target_compile_definitions(glimpseMRI PRIVATE
 )
 
 # ------------------------------------------------------------
-# Locate engine + dicom libs from earlier build steps
-# These are passed by scripts/core/build_modules.sh
+# Locate engine + dicom libs from earlier build steps.
+# Prefer explicit cache paths, but also try common local build dirs.
+# These may be passed by scripts/core/build_modules.sh or
+# scripts/targets/jetson/build.sh.
 # ------------------------------------------------------------
-set(GLIMPSE_ENGINE_BUILD_DIR "" CACHE PATH "Path to build_engine_<TYPE>")
-set(GLIMPSE_DICOM_BUILD_DIR  "" CACHE PATH "Path to build_dicom_<TYPE>")
+set(GLIMPSE_ENGINE_BUILD_DIR "" CACHE PATH "Path to build_engine_<TYPE> or engine build directory")
+set(GLIMPSE_DICOM_BUILD_DIR  "" CACHE PATH "Path to build_dicom_<TYPE> or dicom build directory")
+
+set(_GLIMPSE_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
+
+set(_GLIMPSE_ENGINE_SEARCH_DIRS
+    "${GLIMPSE_ENGINE_BUILD_DIR}"
+    "${GLIMPSE_ENGINE_BUILD_DIR}/lib"
+    "${_GLIMPSE_REPO_ROOT}/build/engine-jetson"
+    "${_GLIMPSE_REPO_ROOT}/build/engine-jetson/lib"
+    "${_GLIMPSE_REPO_ROOT}/build/engine-linux"
+    "${_GLIMPSE_REPO_ROOT}/build/engine-linux/lib"
+    "${_GLIMPSE_REPO_ROOT}/build_engine_release"
+    "${_GLIMPSE_REPO_ROOT}/build_engine_release/lib"
+    "${_GLIMPSE_REPO_ROOT}/build_engine_debug"
+    "${_GLIMPSE_REPO_ROOT}/build_engine_debug/lib"
+)
+
+set(_GLIMPSE_DICOM_SEARCH_DIRS
+    "${GLIMPSE_DICOM_BUILD_DIR}"
+    "${GLIMPSE_DICOM_BUILD_DIR}/lib"
+    "${_GLIMPSE_REPO_ROOT}/build/dicom-jetson"
+    "${_GLIMPSE_REPO_ROOT}/build/dicom-jetson/lib"
+    "${_GLIMPSE_REPO_ROOT}/build/dicom-linux"
+    "${_GLIMPSE_REPO_ROOT}/build/dicom-linux/lib"
+    "${_GLIMPSE_REPO_ROOT}/build_dicom_release"
+    "${_GLIMPSE_REPO_ROOT}/build_dicom_release/lib"
+    "${_GLIMPSE_REPO_ROOT}/build_dicom_debug"
+    "${_GLIMPSE_REPO_ROOT}/build_dicom_debug/lib"
+)
+
+list(REMOVE_DUPLICATES _GLIMPSE_ENGINE_SEARCH_DIRS)
+list(REMOVE_DUPLICATES _GLIMPSE_DICOM_SEARCH_DIRS)
 
 message(STATUS "[gui] GLIMPSE_ENGINE_BUILD_DIR = ${GLIMPSE_ENGINE_BUILD_DIR}")
 message(STATUS "[gui] GLIMPSE_DICOM_BUILD_DIR  = ${GLIMPSE_DICOM_BUILD_DIR}")
+message(STATUS "[gui] Engine search dirs:")
+foreach(_dir IN LISTS _GLIMPSE_ENGINE_SEARCH_DIRS)
+    if(_dir)
+        message(STATUS "  [gui][engine-search] ${_dir}")
+    endif()
+endforeach()
+
+message(STATUS "[gui] DICOM search dirs:")
+foreach(_dir IN LISTS _GLIMPSE_DICOM_SEARCH_DIRS)
+    if(_dir)
+        message(STATUS "  [gui][dicom-search] ${_dir}")
+    endif()
+endforeach()
 
 find_library(GLIMPSE_ENGINE_LIB
     NAMES mri_engine
-    PATHS
-        ${GLIMPSE_ENGINE_BUILD_DIR}
-        ${GLIMPSE_ENGINE_BUILD_DIR}/lib
+    PATHS ${_GLIMPSE_ENGINE_SEARCH_DIRS}
     NO_DEFAULT_PATH
 )
 
 find_library(GLIMPSE_DICOM_LIB
     NAMES dicom_io_lib
-    PATHS
-        ${GLIMPSE_DICOM_BUILD_DIR}
-        ${GLIMPSE_DICOM_BUILD_DIR}/lib
+    PATHS ${_GLIMPSE_DICOM_SEARCH_DIRS}
     NO_DEFAULT_PATH
 )
 
@@ -171,11 +215,17 @@ message(STATUS "[gui] GLIMPSE_ENGINE_LIB = ${GLIMPSE_ENGINE_LIB}")
 message(STATUS "[gui] GLIMPSE_DICOM_LIB  = ${GLIMPSE_DICOM_LIB}")
 
 if(NOT GLIMPSE_ENGINE_LIB)
-    message(FATAL_ERROR "[gui][ERR] Could not find mri_engine. Pass -DGLIMPSE_ENGINE_BUILD_DIR=...")
+    message(FATAL_ERROR
+        "[gui][ERR] Could not find mri_engine.\n"
+        "Pass -DGLIMPSE_ENGINE_BUILD_DIR=<path> or place the build under a known local directory."
+    )
 endif()
 
 if(NOT GLIMPSE_DICOM_LIB)
-    message(FATAL_ERROR "[gui][ERR] Could not find dicom_io_lib. Pass -DGLIMPSE_DICOM_BUILD_DIR=...")
+    message(FATAL_ERROR
+        "[gui][ERR] Could not find dicom_io_lib.\n"
+        "Pass -DGLIMPSE_DICOM_BUILD_DIR=<path> or place the build under a known local directory."
+    )
 endif()
 
 # ------------------------------------------------------------
