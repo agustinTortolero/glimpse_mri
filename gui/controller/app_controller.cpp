@@ -84,7 +84,8 @@ void AppController::initCore()
     m_engineReady = initEngine();
     if (!m_engineReady) {
         qWarning() << "[CTRL][initCore][WRN]"
-                   << "MRI engine init FAILED; LIB/HDF5 reconstruction will be unavailable.";
+                   << "MRI engine init FAILED;"
+                      " LIB/HDF5 reconstruction will be unavailable.";
     } else {
         qDebug() << "[CTRL][initCore] MRI engine initialized successfully.";
     }
