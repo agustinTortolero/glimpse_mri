@@ -126,3 +126,10 @@ engine/*.so*
 gui/glimpseMRI
 gui/release/
 dist_jetson/
+
+# Generated build/package output
+dist/
+
+
+# Generated build/package output
+dist/
