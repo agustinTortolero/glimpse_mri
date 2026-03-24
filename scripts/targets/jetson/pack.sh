@@ -22,9 +22,11 @@ ARCHIVE_PATH="${OUT_DIR}/${BUNDLE_NAME}.tar.gz"
 ENGINE_LIB="${ENGINE_BUILD_DIR}/libmri_engine.so"
 DICOM_LIB="${DICOM_BUILD_DIR}/libdicom_io_lib.so"
 GUI_EXE="${GUI_BUILD_DIR}/${APP_NAME}"
+INSTALL_DEPS_SOURCE="${ROOT_DIR}/scripts/targets/jetson/install_deps.sh"
 
 RUN_SCRIPT="${STAGE_DIR}/run.sh"
 README_FILE="${STAGE_DIR}/README.txt"
+INSTALL_DEPS_STAGED="${STAGE_DIR}/tools/install_deps.sh"
 
 log "ROOT_DIR=${ROOT_DIR}"
 log "BUILD_ROOT=${BUILD_ROOT}"
@@ -50,7 +52,7 @@ done
 
 mkdir -p "${OUT_DIR}"
 rm -rf "${STAGE_DIR}"
-mkdir -p "${STAGE_DIR}/bin" "${STAGE_DIR}/lib"
+mkdir -p "${STAGE_DIR}/bin" "${STAGE_DIR}/lib" "${STAGE_DIR}/tools"
 
 log "Copying GUI executable"
 cp -av "${GUI_EXE}" "${STAGE_DIR}/bin/"
@@ -60,6 +62,14 @@ cp -av "${ENGINE_LIB}" "${STAGE_DIR}/lib/"
 
 log "Copying DICOM library"
 cp -av "${DICOM_LIB}" "${STAGE_DIR}/lib/"
+
+if [[ -f "${INSTALL_DEPS_SOURCE}" ]]; then
+    log "Copying dependency helper"
+    cp -av "${INSTALL_DEPS_SOURCE}" "${INSTALL_DEPS_STAGED}"
+    chmod +x "${INSTALL_DEPS_STAGED}"
+else
+    warn "Dependency helper not found at ${INSTALL_DEPS_SOURCE}; bundle README will reference a missing file"
+fi
 
 log "Writing run.sh"
 cat > "${RUN_SCRIPT}" <<'RUNEOF'
@@ -83,6 +93,7 @@ Contents
 - lib/libmri_engine.so
 - lib/libdicom_io_lib.so
 - run.sh
+- tools/install_deps.sh
 
 How to run
 ----------
@@ -102,6 +113,14 @@ What this bundle does NOT include
 This bundle does not try to vendor the full Jetson system stack.
 It expects the target Jetson system to already provide the required runtime dependencies,
 such as CUDA, Qt6, OpenCV, DCMTK, HDF5, FFTW, and ISMRMRD.
+
+Before first launch on a fresh Jetson, install the expected system prerequisites:
+
+  ./tools/install_deps.sh --runtime
+
+If you also plan to build locally on the Jetson instead of only running the bundle:
+
+  ./tools/install_deps.sh --build
 
 Typical runtime-provided dependencies on the validated Jetson system included:
 - Qt6 runtime libraries
@@ -135,6 +154,7 @@ log "Writing SHA256 checksums"
         "lib/libmri_engine.so" \
         "lib/libdicom_io_lib.so" \
         "run.sh" \
+        "tools/install_deps.sh" \
         "README.txt" \
         > SHA256SUMS.txt
 )
