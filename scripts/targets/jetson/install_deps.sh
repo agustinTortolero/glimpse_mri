@@ -136,7 +136,10 @@ runtime_packages=(
     libqt6gui6
     libqt6widgets6
     libqt6dbus6
+    libdcmtk-dev
+    libhdf5-dev
     libfftw3-single3
+    libismrmrd-dev
     libpugixml1v5
     qt6-qpa-plugins
 )
@@ -149,9 +152,6 @@ optional_runtime_packages=(
     libopencv-core-dev
     libopencv-imgproc-dev
     libopencv-imgcodecs-dev
-    libdcmtk-dev
-    libhdf5-dev
-    libismrmrd-dev
 )
 
 # Build packages for compiling on Jetson. These intentionally include dev/meta packages

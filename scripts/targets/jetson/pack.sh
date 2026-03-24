@@ -23,10 +23,14 @@ ENGINE_LIB="${ENGINE_BUILD_DIR}/libmri_engine.so"
 DICOM_LIB="${DICOM_BUILD_DIR}/libdicom_io_lib.so"
 GUI_EXE="${GUI_BUILD_DIR}/${APP_NAME}"
 INSTALL_DEPS_SOURCE="${ROOT_DIR}/scripts/targets/jetson/install_deps.sh"
+INSTALL_DESKTOP_SOURCE="${ROOT_DIR}/scripts/targets/jetson/install_desktop.sh"
+ICON_SOURCE="${ROOT_DIR}/gui/assets/images/icons/mri_256.png"
 
 RUN_SCRIPT="${STAGE_DIR}/run.sh"
 README_FILE="${STAGE_DIR}/README.txt"
 INSTALL_DEPS_STAGED="${STAGE_DIR}/tools/install_deps.sh"
+INSTALL_DESKTOP_STAGED="${STAGE_DIR}/tools/install_desktop.sh"
+ICON_STAGED="${STAGE_DIR}/icons/mri_256.png"
 
 log "ROOT_DIR=${ROOT_DIR}"
 log "BUILD_ROOT=${BUILD_ROOT}"
@@ -52,7 +56,7 @@ done
 
 mkdir -p "${OUT_DIR}"
 rm -rf "${STAGE_DIR}"
-mkdir -p "${STAGE_DIR}/bin" "${STAGE_DIR}/lib" "${STAGE_DIR}/tools"
+mkdir -p "${STAGE_DIR}/bin" "${STAGE_DIR}/lib" "${STAGE_DIR}/tools" "${STAGE_DIR}/icons"
 
 log "Copying GUI executable"
 cp -av "${GUI_EXE}" "${STAGE_DIR}/bin/"
@@ -69,6 +73,21 @@ if [[ -f "${INSTALL_DEPS_SOURCE}" ]]; then
     chmod +x "${INSTALL_DEPS_STAGED}"
 else
     warn "Dependency helper not found at ${INSTALL_DEPS_SOURCE}; bundle README will reference a missing file"
+fi
+
+if [[ -f "${INSTALL_DESKTOP_SOURCE}" ]]; then
+    log "Copying desktop integration helper"
+    cp -av "${INSTALL_DESKTOP_SOURCE}" "${INSTALL_DESKTOP_STAGED}"
+    chmod +x "${INSTALL_DESKTOP_STAGED}"
+else
+    warn "Desktop integration helper not found at ${INSTALL_DESKTOP_SOURCE}; bundle README will reference a missing file"
+fi
+
+if [[ -f "${ICON_SOURCE}" ]]; then
+    log "Copying desktop icon"
+    cp -av "${ICON_SOURCE}" "${ICON_STAGED}"
+else
+    warn "Desktop icon not found at ${ICON_SOURCE}; desktop helper will fall back to a generic icon"
 fi
 
 log "Writing run.sh"
@@ -94,6 +113,8 @@ Contents
 - lib/libdicom_io_lib.so
 - run.sh
 - tools/install_deps.sh
+- tools/install_desktop.sh
+- icons/mri_256.png
 
 How to run
 ----------
@@ -117,6 +138,10 @@ such as CUDA, Qt6, OpenCV, DCMTK, HDF5, FFTW, and ISMRMRD.
 Before first launch on a fresh Jetson, install the expected system prerequisites:
 
   ./tools/install_deps.sh --runtime
+
+To add a desktop launcher for the extracted bundle:
+
+  ./tools/install_desktop.sh
 
 If you also plan to build locally on the Jetson instead of only running the bundle:
 
@@ -155,6 +180,8 @@ log "Writing SHA256 checksums"
         "lib/libdicom_io_lib.so" \
         "run.sh" \
         "tools/install_deps.sh" \
+        "tools/install_desktop.sh" \
+        "icons/mri_256.png" \
         "README.txt" \
         > SHA256SUMS.txt
 )
