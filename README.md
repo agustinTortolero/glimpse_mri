@@ -125,3 +125,40 @@ You can create a desktop/app-menu launcher after a successful build:
 ---
 
 
+
+### Raspberry Pi 5 (ARM64 CPU-only)
+
+This repository includes a CPU-only target flow for Raspberry Pi 5 under:
+
+```bash
+scripts/targets/rpi5_aarch64/
+```
+
+On **Dev-Raspi** (build + package):
+
+```bash
+chmod +x scripts/targets/rpi5_aarch64/*.sh
+sudo ./scripts/targets/rpi5_aarch64/prerequisites_build.sh
+./scripts/targets/rpi5_aarch64/build.sh
+./scripts/targets/rpi5_aarch64/pack.sh
+```
+
+On **Test-Raspi** (runtime + install):
+
+```bash
+# copy tarball from Dev-Raspi, then:
+tar -xzf glimpse_mri_aarch64_Release_*.tar.gz
+cd glimpse_mri_aarch64_Release_*
+sudo ./install_deps.sh   # optional but recommended
+./install.sh             # default install: ~/glimpse_mri
+~/glimpse_mri/run.sh
+```
+
+Notes:
+- CPU-only is explicit (`CUDA_MODE=off` in the target build wrapper).
+- Packaging is tarball-based (no .deb packaging).
+- `install.sh` also supports `--prefix /opt/glimpse_mri` if you want a system path.
+
+---
+
+

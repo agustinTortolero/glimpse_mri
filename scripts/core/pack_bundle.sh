@@ -37,6 +37,7 @@ pack_glimpse_bundle() {
   local out_root="${3:-}"
   local gui_exe="${4:-}"
   local keep_dir="${5:-0}"
+  local runtime_src_override="${6:-}"
 
   need_cmd tar
   need_cmd sha256sum
@@ -133,7 +134,7 @@ pack_glimpse_bundle() {
     ldd "$so" | tee "${diag_dir}/ldd_${base}.txt" >/dev/null || true
   done
 
-  cat > "${out_dir}/run.sh" <<EOF
+  cat > "${out_dir}/run.sh" <<INSTALL_RUN_EOF
 #!/usr/bin/env bash
 set -euo pipefail
 ts() { date +"%Y-%m-%d %H:%M:%S"; }
@@ -152,10 +153,10 @@ export LD_LIBRARY_PATH="\${LIB}:\${LD_LIBRARY_PATH:-}"
 log "LD_LIBRARY_PATH=\$LD_LIBRARY_PATH"
 
 exec "\${BIN}/${gui_basename}" "\$@"
-EOF
+INSTALL_RUN_EOF
   chmod +x "${out_dir}/run.sh"
 
-  cat > "${out_dir}/create_desktop_shortcut.sh" <<'EOF'
+  cat > "${out_dir}/create_desktop_shortcut.sh" <<'DESKTOP_EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 ts() { date +"%Y-%m-%d %H:%M:%S"; }
@@ -202,22 +203,61 @@ if command -v gio >/dev/null 2>&1; then
 fi
 
 log "Done. If Ubuntu hides it, right-click -> Allow Launching."
-EOF
+DESKTOP_EOF
   chmod +x "${out_dir}/create_desktop_shortcut.sh"
 
   local runtime_src="${root}/scripts/targets/ubuntu_x86_64/prerequisites_run.sh"
+  if [[ -n "$runtime_src_override" ]]; then
+    runtime_src="$runtime_src_override"
+  fi
+
   if [[ -f "$runtime_src" ]]; then
     cp -v "$runtime_src" "${out_dir}/install_deps.sh"
     chmod +x "${out_dir}/install_deps.sh"
   else
-    cat > "${out_dir}/install_deps.sh" <<'EOF'
+    cat > "${out_dir}/install_deps.sh" <<'MISSING_DEPS_EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 echo "[ERR] Missing embedded runtime dependency installer."
 exit 1
-EOF
+MISSING_DEPS_EOF
     chmod +x "${out_dir}/install_deps.sh"
   fi
+
+  cat > "${out_dir}/install.sh" <<'INSTALL_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+ts() { date +"%Y-%m-%d %H:%M:%S"; }
+dbg() { echo "[$(ts)][DBG] $*"; }
+wrn() { echo "[$(ts)][WRN] $*" >&2; }
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_USER_DEST="${HOME}/glimpse_mri"
+DEST="${DEFAULT_USER_DEST}"
+
+if [[ "${1:-}" == "--prefix" && -n "${2:-}" ]]; then
+  DEST="$2"
+  shift 2
+fi
+
+dbg "Bundle source: ${HERE}"
+dbg "Install destination: ${DEST}"
+
+if [[ -e "${DEST}" ]]; then
+  wrn "Destination already exists and will be replaced: ${DEST}"
+  rm -rf "${DEST}"
+fi
+
+mkdir -p "$(dirname "${DEST}")"
+cp -a "${HERE}" "${DEST}"
+
+dbg "Install complete."
+if [[ -f "${DEST}/install_deps.sh" ]]; then
+  dbg "Optional runtime deps step: sudo ${DEST}/install_deps.sh"
+fi
+dbg "Run with: ${DEST}/run.sh"
+INSTALL_EOF
+  chmod +x "${out_dir}/install.sh"
 
   ensure_dir "$out_root"
   local tarball="${out_root}/${out_name}.tar.gz"
